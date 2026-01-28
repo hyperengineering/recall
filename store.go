@@ -294,8 +294,94 @@ func (s *Store) queryLore(params QueryParams, requireEmbedding bool) ([]Lore, er
 	return results, rows.Err()
 }
 
-// ApplyFeedback updates lore confidence based on feedback.
-func (s *Store) ApplyFeedback(session *Session, params FeedbackParams) (*FeedbackResult, error) {
+// ApplyFeedback atomically applies feedback to a lore entry.
+// All operations occur in a single transaction:
+//  1. UPDATE lore SET confidence (clamped to [0.0, 1.0])
+//  2. IF isHelpful: INCREMENT validation_count, SET last_validated
+//  3. INSERT sync_queue entry (FEEDBACK operation)
+//  4. COMMIT
+//
+// If any step fails, the entire transaction rolls back.
+//
+// Returns the updated Lore entry.
+// Returns ErrNotFound if lore with given ID does not exist.
+func (s *Store) ApplyFeedback(loreID string, delta float64, isHelpful bool) (*Lore, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	// Verify lore exists first. This check is outside the transaction but safe
+	// because s.mu write lock is held, preventing concurrent modifications.
+	lore, err := s.getLore(loreID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Begin transaction
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: begin transaction: %w", err)
+	}
+	defer tx.Rollback() // no-op if committed
+
+	// Calculate new confidence with clamping
+	newConfidence := lore.Confidence + delta
+	if newConfidence < ConfidenceMin {
+		newConfidence = ConfidenceMin
+	}
+	if newConfidence > ConfidenceMax {
+		newConfidence = ConfidenceMax
+	}
+
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339)
+
+	// UPDATE lore (with or without validation metadata)
+	if isHelpful {
+		_, err = tx.Exec(`
+			UPDATE lore SET
+				confidence = ?,
+				validation_count = validation_count + 1,
+				last_validated = ?,
+				updated_at = ?
+			WHERE id = ?
+		`, newConfidence, nowStr, nowStr, loreID)
+	} else {
+		_, err = tx.Exec(`
+			UPDATE lore SET
+				confidence = ?,
+				updated_at = ?
+			WHERE id = ?
+		`, newConfidence, nowStr, loreID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: update confidence: %w", err)
+	}
+
+	// INSERT sync_queue entry
+	_, err = tx.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at)
+		VALUES (?, 'FEEDBACK', ?)
+	`, loreID, nowStr)
+	if err != nil {
+		return nil, fmt.Errorf("store: enqueue sync: %w", err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit: %w", err)
+	}
+
+	// Return updated lore
+	return s.getLore(loreID)
+}
+
+// ApplyFeedbackBatch updates lore confidence based on batch feedback.
+// Deprecated: Use ApplyFeedback() for single-entry atomic feedback.
+func (s *Store) ApplyFeedbackBatch(session *Session, params FeedbackParams) (*FeedbackResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

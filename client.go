@@ -287,7 +287,8 @@ func (c *Client) Feedback(ref string, ft FeedbackType) (*Lore, error) {
 	}
 
 	delta := feedbackDelta(ft)
-	lore, err := c.store.UpdateConfidence(loreID, delta)
+	isHelpful := ft == Helpful
+	lore, err := c.store.ApplyFeedback(loreID, delta, isHelpful)
 	if err != nil {
 		return nil, fmt.Errorf("client: feedback: %w", err)
 	}
@@ -310,7 +311,7 @@ func isLRef(ref string) bool {
 // FeedbackBatch provides batch feedback on recalled lore.
 // Deprecated: Use Feedback() for single-entry feedback.
 func (c *Client) FeedbackBatch(ctx context.Context, params FeedbackParams) (*FeedbackResult, error) {
-	return c.store.ApplyFeedback(c.session, params)
+	return c.store.ApplyFeedbackBatch(c.session, params)
 }
 
 // GetSessionLore returns all lore surfaced this session.

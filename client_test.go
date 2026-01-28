@@ -1200,3 +1200,230 @@ func TestFeedback_ReturnsUpdatedLore(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Story 3.2: Validation Metadata & Sync Queue - Acceptance Tests
+// =============================================================================
+
+// TestFeedback_HelpfulIncrementsValidationCount tests AC #1:
+// Helpful feedback increments validation_count by 1.
+func TestFeedback_HelpfulIncrementsValidationCount(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	loreID := "01LORE00000000000000001"
+	h.insertLoreWithConfidence(loreID, "Test lore content", 0.5)
+
+	// Apply helpful feedback
+	updated, err := h.client.Feedback(loreID, recall.Helpful)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify validation_count incremented from 0 to 1
+	if updated.ValidationCount != 1 {
+		t.Errorf("ValidationCount = %d, want 1", updated.ValidationCount)
+	}
+}
+
+// TestFeedback_HelpfulSetsLastValidated tests AC #1:
+// Helpful feedback sets last_validated timestamp.
+func TestFeedback_HelpfulSetsLastValidated(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	loreID := "01LORE00000000000000001"
+	h.insertLoreWithConfidence(loreID, "Test lore content", 0.5)
+
+	// Apply helpful feedback
+	updated, err := h.client.Feedback(loreID, recall.Helpful)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify last_validated is set
+	if updated.LastValidated == nil {
+		t.Error("LastValidated is nil, want non-nil timestamp")
+	}
+}
+
+// TestFeedback_IncorrectLeavesValidationUnchanged tests AC #2:
+// Incorrect feedback does NOT modify validation_count or last_validated.
+func TestFeedback_IncorrectLeavesValidationUnchanged(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	loreID := "01LORE00000000000000001"
+	h.insertLoreWithConfidence(loreID, "Test lore content", 0.5)
+
+	// Apply incorrect feedback
+	updated, err := h.client.Feedback(loreID, recall.Incorrect)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify validation_count unchanged (still 0)
+	if updated.ValidationCount != 0 {
+		t.Errorf("ValidationCount = %d, want 0 (unchanged)", updated.ValidationCount)
+	}
+	// Verify last_validated still nil
+	if updated.LastValidated != nil {
+		t.Error("LastValidated should be nil for incorrect feedback")
+	}
+}
+
+// TestFeedback_NotRelevantLeavesValidationUnchanged tests AC #2:
+// NotRelevant feedback does NOT modify validation_count or last_validated.
+func TestFeedback_NotRelevantLeavesValidationUnchanged(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	loreID := "01LORE00000000000000001"
+	h.insertLoreWithConfidence(loreID, "Test lore content", 0.5)
+
+	// Apply not-relevant feedback
+	updated, err := h.client.Feedback(loreID, recall.NotRelevant)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify validation_count unchanged
+	if updated.ValidationCount != 0 {
+		t.Errorf("ValidationCount = %d, want 0 (unchanged)", updated.ValidationCount)
+	}
+}
+
+// TestFeedback_CreatesSyncQueueEntry tests AC #3:
+// Feedback operation creates a sync queue entry.
+func TestFeedback_CreatesSyncQueueEntry(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer client.Close()
+
+	// Record lore (this also creates a sync entry)
+	lore, err := client.Record("Test content", recall.CategoryPatternOutcome)
+	if err != nil {
+		t.Fatalf("Record() returned error: %v", err)
+	}
+
+	// Get initial pending sync count
+	statsBefore, err := client.Stats()
+	if err != nil {
+		t.Fatalf("Stats() returned error: %v", err)
+	}
+
+	// Apply feedback
+	_, err = client.Feedback(lore.ID, recall.Helpful)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Get new pending sync count
+	statsAfter, err := client.Stats()
+	if err != nil {
+		t.Fatalf("Stats() returned error: %v", err)
+	}
+
+	// Verify PendingSync increased by 1
+	if statsAfter.PendingSync != statsBefore.PendingSync+1 {
+		t.Errorf("PendingSync = %d, want %d", statsAfter.PendingSync, statsBefore.PendingSync+1)
+	}
+}
+
+// TestFeedback_MultipleFeedbacksQueuedOffline tests AC #5:
+// Multiple feedback operations accumulate in sync queue.
+func TestFeedback_MultipleFeedbacksQueuedOffline(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer client.Close()
+
+	// Record lore
+	lore, err := client.Record("Test content", recall.CategoryPatternOutcome)
+	if err != nil {
+		t.Fatalf("Record() returned error: %v", err)
+	}
+
+	// Get initial pending sync count (includes INSERT from Record)
+	statsBefore, err := client.Stats()
+	if err != nil {
+		t.Fatalf("Stats() returned error: %v", err)
+	}
+
+	// Apply 5 feedbacks
+	for i := 0; i < 5; i++ {
+		_, err = client.Feedback(lore.ID, recall.Helpful)
+		if err != nil {
+			t.Fatalf("Feedback() #%d returned error: %v", i+1, err)
+		}
+	}
+
+	// Get new pending sync count
+	statsAfter, err := client.Stats()
+	if err != nil {
+		t.Fatalf("Stats() returned error: %v", err)
+	}
+
+	// Verify PendingSync increased by 5
+	if statsAfter.PendingSync != statsBefore.PendingSync+5 {
+		t.Errorf("PendingSync = %d, want %d", statsAfter.PendingSync, statsBefore.PendingSync+5)
+	}
+}
+
+// TestFeedback_SyncQueuePersistsAcrossRestart tests AC #5:
+// Sync queue persists across client restart.
+func TestFeedback_SyncQueuePersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Create client, record lore, apply feedback
+	client1, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+
+	lore, err := client1.Record("Test content", recall.CategoryPatternOutcome)
+	if err != nil {
+		t.Fatalf("Record() returned error: %v", err)
+	}
+
+	_, err = client1.Feedback(lore.ID, recall.Helpful)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Get pending sync count before closing
+	statsBefore, err := client1.Stats()
+	if err != nil {
+		t.Fatalf("Stats() returned error: %v", err)
+	}
+
+	// Close client
+	client1.Close()
+
+	// Reopen client with same DB
+	client2, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error on reopen: %v", err)
+	}
+	defer client2.Close()
+
+	// Verify pending sync count preserved
+	statsAfter, err := client2.Stats()
+	if err != nil {
+		t.Fatalf("Stats() returned error: %v", err)
+	}
+
+	if statsAfter.PendingSync != statsBefore.PendingSync {
+		t.Errorf("PendingSync after restart = %d, want %d (preserved)", statsAfter.PendingSync, statsBefore.PendingSync)
+	}
+}
+
