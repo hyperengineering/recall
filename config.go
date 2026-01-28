@@ -28,10 +28,6 @@ type Config struct {
 	// AutoSync enables automatic background syncing.
 	// Defaults to true.
 	AutoSync bool
-
-	// OfflineMode disables all network operations.
-	// Defaults to false.
-	OfflineMode bool
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -42,7 +38,6 @@ func DefaultConfig() Config {
 	return Config{
 		SyncInterval: 5 * time.Minute,
 		AutoSync:     true,
-		OfflineMode:  false,
 		SourceID:     hostname,
 	}
 }
@@ -69,7 +64,7 @@ func (c *Config) Validate() error {
 		return &ValidationError{Field: "LocalPath", Message: "required: path to SQLite database"}
 	}
 
-	if !c.OfflineMode && c.EngramURL != "" && c.APIKey == "" {
+	if c.EngramURL != "" && c.APIKey == "" {
 		return &ValidationError{Field: "APIKey", Message: "required when EngramURL is set"}
 	}
 
@@ -78,6 +73,12 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// IsOffline returns true if the client operates in offline-only mode.
+// Offline mode is determined by EngramURL being empty.
+func (c *Config) IsOffline() bool {
+	return c.EngramURL == ""
 }
 
 // WithDefaults fills in default values for unset fields.

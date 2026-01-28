@@ -144,17 +144,27 @@ func TestWithDefaults_DoesNotFillLocalPath(t *testing.T) {
 	}
 }
 
-func TestConfig_Validate_OfflineModeSkipsAPIKeyCheck(t *testing.T) {
-	// Pin DD-6 behavior: OfflineMode: true skips APIKey requirement
-	// even when EngramURL is set.
+func TestConfig_IsOffline_EmptyEngramURL(t *testing.T) {
+	// Offline mode is now derived from EngramURL being empty.
+	// Resolves DD-6 ambiguity from Epic 1.
 	cfg := recall.Config{
-		LocalPath:   "/tmp/test.db",
-		EngramURL:   "http://engram:8080",
-		APIKey:      "", // intentionally empty
-		OfflineMode: true,
+		LocalPath: "/tmp/test.db",
+		EngramURL: "", // empty = offline
 	}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate() = %v, want nil (OfflineMode skips APIKey check)", err)
+	if !cfg.IsOffline() {
+		t.Error("IsOffline() = false, want true when EngramURL is empty")
+	}
+}
+
+func TestConfig_IsOffline_WithEngramURL(t *testing.T) {
+	// Offline mode is false when EngramURL is set.
+	cfg := recall.Config{
+		LocalPath: "/tmp/test.db",
+		EngramURL: "http://engram:8080",
+		APIKey:    "test-key",
+	}
+	if cfg.IsOffline() {
+		t.Error("IsOffline() = true, want false when EngramURL is set")
 	}
 }
 

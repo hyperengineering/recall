@@ -11,9 +11,9 @@ import (
 
 func main() {
 	// Create a client with local-only configuration
+	// (offline mode is implied when EngramURL is not set)
 	cfg := recall.Config{
-		LocalPath:   "./data/lore.db",
-		OfflineMode: true, // No Engram connection
+		LocalPath: "./data/lore.db",
 	}
 
 	client, err := recall.New(cfg)

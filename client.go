@@ -44,7 +44,7 @@ func New(cfg Config) (*Client, error) {
 		syncDone: make(chan struct{}),
 	}
 
-	if cfg.EngramURL != "" && !cfg.OfflineMode {
+	if !cfg.IsOffline() {
 		c.syncer = NewSyncer(store, cfg.EngramURL, cfg.APIKey)
 	}
 
