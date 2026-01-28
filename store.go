@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hyperengineering/recall/internal/store/migrations"
 	"github.com/oklog/ulid/v2"
+	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -52,49 +54,12 @@ func NewStore(path string) (*Store, error) {
 }
 
 func (s *Store) migrate() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS lore (
-		id TEXT PRIMARY KEY,
-		content TEXT NOT NULL,
-		context TEXT,
-		category TEXT NOT NULL,
-		confidence REAL NOT NULL DEFAULT 0.7,
-		embedding BLOB,
-		source_id TEXT NOT NULL,
-		sources TEXT,
-		validation_count INTEGER NOT NULL DEFAULT 0,
-		last_validated TEXT,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL,
-		synced_at TEXT
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_lore_category ON lore(category);
-	CREATE INDEX IF NOT EXISTS idx_lore_confidence ON lore(confidence);
-	CREATE INDEX IF NOT EXISTS idx_lore_created_at ON lore(created_at);
-	CREATE INDEX IF NOT EXISTS idx_lore_synced_at ON lore(synced_at);
-	CREATE INDEX IF NOT EXISTS idx_lore_last_validated ON lore(last_validated);
-
-	CREATE TABLE IF NOT EXISTS metadata (
-		key TEXT PRIMARY KEY,
-		value TEXT NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS sync_queue (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		lore_id TEXT NOT NULL,
-		operation TEXT NOT NULL,
-		payload TEXT,
-		queued_at TEXT NOT NULL,
-		attempts INTEGER DEFAULT 0,
-		last_error TEXT
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_sync_queue_queued_at ON sync_queue(queued_at);
-	`
-
-	if _, err := s.db.Exec(schema); err != nil {
-		return err
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("store: set goose dialect: %w", err)
+	}
+	if err := goose.Up(s.db, "."); err != nil {
+		return fmt.Errorf("store: run migrations: %w", err)
 	}
 
 	// Set schema version if not set
@@ -149,8 +114,8 @@ func (s *Store) Record(lore Lore) (*Lore, error) {
 
 	var sourcesStr *string
 	if len(lore.Sources) > 0 {
-		s := strings.Join(lore.Sources, ",")
-		sourcesStr = &s
+		joined := strings.Join(lore.Sources, ",")
+		sourcesStr = &joined
 	}
 
 	_, err := s.db.Exec(`
@@ -173,10 +138,10 @@ func (s *Store) Record(lore Lore) (*Lore, error) {
 		return nil, fmt.Errorf("insert lore: %w", err)
 	}
 
-	// Queue for sync
-	if err := s.queueSync(lore.ID, "INSERT", nil); err != nil {
-		// Log but don't fail
-	}
+	// Queue for sync - intentionally non-failing; sync errors are handled
+	// during background sync, not during local writes. This ensures local
+	// operations remain fast and reliable even when sync queue has issues.
+	_ = s.queueSync(lore.ID, "INSERT", nil)
 
 	return &lore, nil
 }
@@ -219,7 +184,7 @@ func (s *Store) Query(params QueryParams) ([]Lore, error) {
 		       validation_count, last_validated, created_at, updated_at, synced_at
 		FROM lore WHERE 1=1
 	`
-	args := []interface{}{}
+	args := []any{}
 
 	if params.MinConfidence > 0 {
 		query += " AND confidence >= ?"
@@ -335,8 +300,8 @@ func (s *Store) adjustConfidence(id string, delta float64, incrementValidation b
 		return nil, err
 	}
 
-	// Queue feedback for sync
-	s.queueSync(id, "FEEDBACK", nil)
+	// Queue feedback for sync - intentionally non-failing (see Record comment)
+	_ = s.queueSync(id, "FEEDBACK", nil)
 
 	return &FeedbackUpdate{
 		ID:              id,
@@ -391,7 +356,7 @@ func (s *Store) MarkSynced(ids []string, syncedAt time.Time) error {
 	}
 
 	placeholders := make([]string, len(ids))
-	args := []interface{}{syncedAt.Format(time.RFC3339)}
+	args := []any{syncedAt.Format(time.RFC3339)}
 	for i, id := range ids {
 		placeholders[i] = "?"
 		args = append(args, id)
@@ -458,7 +423,14 @@ func (s *Store) queueSync(loreID, operation string, payload []byte) error {
 	return err
 }
 
-func (s *Store) scanLore(row *sql.Row) (*Lore, error) {
+// scanner abstracts the Scan method shared by *sql.Row and *sql.Rows.
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+// scanLoreFrom scans a single lore row from any scanner (Row or Rows).
+// Returns ErrNotFound only for sql.ErrNoRows from *sql.Row.
+func (s *Store) scanLoreFrom(sc scanner) (*Lore, error) {
 	var (
 		lore          Lore
 		context       sql.NullString
@@ -471,7 +443,7 @@ func (s *Store) scanLore(row *sql.Row) (*Lore, error) {
 		category      string
 	)
 
-	err := row.Scan(
+	err := sc.Scan(
 		&lore.ID,
 		&lore.Content,
 		&context,
@@ -517,60 +489,14 @@ func (s *Store) scanLore(row *sql.Row) (*Lore, error) {
 	return &lore, nil
 }
 
+// scanLore scans a single row from QueryRow.
+func (s *Store) scanLore(row *sql.Row) (*Lore, error) {
+	return s.scanLoreFrom(row)
+}
+
+// scanLoreRows scans a single row from Query iteration.
 func (s *Store) scanLoreRows(rows *sql.Rows) (*Lore, error) {
-	var (
-		lore          Lore
-		context       sql.NullString
-		embeddingBlob []byte
-		sources       sql.NullString
-		lastValidated sql.NullString
-		syncedAt      sql.NullString
-		createdAt     string
-		updatedAt     string
-		category      string
-	)
-
-	err := rows.Scan(
-		&lore.ID,
-		&lore.Content,
-		&context,
-		&category,
-		&lore.Confidence,
-		&embeddingBlob,
-		&lore.SourceID,
-		&sources,
-		&lore.ValidationCount,
-		&lastValidated,
-		&createdAt,
-		&updatedAt,
-		&syncedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	lore.Category = Category(category)
-	if context.Valid {
-		lore.Context = context.String
-	}
-	if len(embeddingBlob) > 0 {
-		lore.Embedding = embeddingBlob
-	}
-	if sources.Valid {
-		lore.Sources = strings.Split(sources.String, ",")
-	}
-	if lastValidated.Valid {
-		t, _ := time.Parse(time.RFC3339, lastValidated.String)
-		lore.LastValidated = &t
-	}
-	lore.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-	lore.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
-	if syncedAt.Valid {
-		t, _ := time.Parse(time.RFC3339, syncedAt.String)
-		lore.SyncedAt = &t
-	}
-
-	return &lore, nil
+	return s.scanLoreFrom(rows)
 }
 
 func nullString(s string) *string {
