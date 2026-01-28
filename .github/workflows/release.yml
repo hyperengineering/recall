@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Build binaries
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o recall-linux-amd64 ./cmd/recall
+          GOOS=darwin GOARCH=amd64 go build -o recall-darwin-amd64 ./cmd/recall
+          GOOS=darwin GOARCH=arm64 go build -o recall-darwin-arm64 ./cmd/recall
+          GOOS=windows GOARCH=amd64 go build -o recall-windows-amd64.exe ./cmd/recall
+
+      - name: Create checksums
+        run: sha256sum recall-* > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            recall-*
+            checksums.txt
+          generate_release_notes: true
