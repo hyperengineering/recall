@@ -41,10 +41,11 @@ func main() {
 	fmt.Println("Querying for relevant context...")
 
 	// Query for lore relevant to current task
+	minConf := 0.6
 	result, err := client.Query(ctx, recall.QueryParams{
 		Query:         "implementing REST API endpoints with authentication",
 		K:             5,
-		MinConfidence: 0.6,
+		MinConfidence: &minConf,
 		Categories: []recall.Category{
 			recall.CategoryPatternOutcome,
 			recall.CategoryInterfaceLesson,

@@ -11,10 +11,11 @@ import (
 
 // Client is the main interface for interacting with lore.
 type Client struct {
-	store   *Store
-	syncer  *Syncer
-	session *Session
-	config  Config
+	store    *Store
+	syncer   *Syncer
+	session  *Session
+	searcher Searcher
+	config   Config
 
 	mu       sync.Mutex
 	stopSync chan struct{}
@@ -37,6 +38,7 @@ func New(cfg Config) (*Client, error) {
 	c := &Client{
 		store:    store,
 		session:  NewSession(),
+		searcher: &BruteForceSearcher{},
 		config:   cfg,
 		stopSync: make(chan struct{}),
 		syncDone: make(chan struct{}),
@@ -157,16 +159,39 @@ func (c *Client) RecordLegacy(ctx context.Context, params RecordParams) (*Lore, 
 }
 
 // Query retrieves relevant lore based on semantic similarity.
+//
+// Query path selection:
+//   - If QueryEmbedding is provided: performs semantic similarity search,
+//     ranking results by cosine similarity to the query vector.
+//   - If QueryEmbedding is empty: falls back to basic filtering by category
+//     and confidence, returning results in creation order.
 func (c *Client) Query(ctx context.Context, params QueryParams) (*QueryResult, error) {
-	// Set defaults
+	// Set defaults only when both K and MinConfidence are unset
 	if params.K == 0 {
 		params.K = 5
 	}
-	if params.MinConfidence == 0 {
-		params.MinConfidence = 0.5
+	if params.MinConfidence == nil {
+		defaultConfidence := 0.5
+		params.MinConfidence = &defaultConfidence
 	}
 
-	lore, err := c.store.Query(params)
+	var lore []Lore
+	var err error
+
+	if len(params.QueryEmbedding) > 0 {
+		lore, err = c.queryWithSimilarity(params)
+	} else {
+		// No embedding provided, fall back to basic query
+		lore, err = c.store.Query(params)
+		if err != nil {
+			return nil, fmt.Errorf("client: query: %w", err)
+		}
+
+		// Apply K limit (basic query doesn't rank by similarity)
+		if params.K > 0 && len(lore) > params.K {
+			lore = lore[:params.K]
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +204,45 @@ func (c *Client) Query(ctx context.Context, params QueryParams) (*QueryResult, e
 	}
 
 	return &QueryResult{Lore: lore, SessionRefs: refs}, nil
+}
+
+// queryWithSimilarity performs semantic similarity search using the query embedding.
+// It retrieves candidates matching filters, then ranks them by cosine similarity.
+func (c *Client) queryWithSimilarity(params QueryParams) ([]Lore, error) {
+	// Get all lore with embeddings that match filters
+	lore, err := c.store.QueryWithEmbeddings(params)
+	if err != nil {
+		return nil, fmt.Errorf("client: query: %w", err)
+	}
+
+	// Convert to candidates for similarity search
+	candidates := make([]CandidateLore, 0, len(lore))
+	loreByID := make(map[string]Lore, len(lore))
+	for _, l := range lore {
+		if len(l.Embedding) > 0 {
+			embedding := UnpackFloat32(l.Embedding)
+			if embedding != nil {
+				candidates = append(candidates, CandidateLore{
+					ID:        l.ID,
+					Embedding: embedding,
+				})
+				loreByID[l.ID] = l
+			}
+		}
+	}
+
+	// Perform similarity search
+	scored := c.searcher.Search(params.QueryEmbedding, candidates, params.K)
+
+	// Rebuild lore slice in similarity order
+	result := make([]Lore, 0, len(scored))
+	for _, s := range scored {
+		if l, ok := loreByID[s.ID]; ok {
+			result = append(result, l)
+		}
+	}
+
+	return result, nil
 }
 
 // Feedback provides feedback on recalled lore.

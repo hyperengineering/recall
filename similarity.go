@@ -3,10 +3,18 @@ package recall
 import (
 	"encoding/binary"
 	"math"
+	"sort"
 )
 
 // PackEmbedding converts a float32 slice to a compact binary representation.
+// Deprecated: Use PackFloat32 instead.
 func PackEmbedding(v []float32) []byte {
+	return PackFloat32(v)
+}
+
+// PackFloat32 encodes a float32 embedding vector as a compact binary BLOB.
+// Uses little-endian encoding with 4 bytes per float.
+func PackFloat32(v []float32) []byte {
 	buf := make([]byte, len(v)*4)
 	for i, f := range v {
 		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(f))
@@ -15,7 +23,14 @@ func PackEmbedding(v []float32) []byte {
 }
 
 // UnpackEmbedding converts a binary representation back to a float32 slice.
+// Deprecated: Use UnpackFloat32 instead.
 func UnpackEmbedding(b []byte) []float32 {
+	return UnpackFloat32(b)
+}
+
+// UnpackFloat32 reconstructs a float32 vector from a packed binary BLOB.
+// Returns nil if the input length is not a multiple of 4.
+func UnpackFloat32(b []byte) []float32 {
 	if len(b)%4 != 0 {
 		return nil
 	}
@@ -53,21 +68,77 @@ func CosineDistance(a, b []float32) float32 {
 	return 1 - CosineSimilarity(a, b)
 }
 
-// ScoredLore pairs a lore entry with its similarity score.
-type ScoredLore struct {
+// RankedLore is the legacy result type for RankBySimilarity.
+// Deprecated: Use ScoredLore with Searcher interface.
+type RankedLore struct {
 	Lore     Lore
 	Score    float32
 	Distance float32
 }
 
+// CandidateLore represents a lore entry candidate for similarity search.
+type CandidateLore struct {
+	ID        string
+	Embedding []float32
+}
+
+// ScoredLore pairs a lore ID with its similarity score.
+type ScoredLore struct {
+	ID    string
+	Score float64
+}
+
+// Searcher abstracts similarity search implementations.
+// Enables future swap to HNSW or other indexing strategies (NFR21).
+type Searcher interface {
+	Search(query []float32, candidates []CandidateLore, k int) []ScoredLore
+}
+
+// BruteForceSearcher implements Searcher using exhaustive cosine similarity.
+type BruteForceSearcher struct{}
+
+// Search ranks candidates by cosine similarity to the query, returning top-k results.
+// Results are sorted by score descending (highest similarity first).
+// If k <= 0 or k > len(candidates), returns all matching candidates.
+func (s *BruteForceSearcher) Search(query []float32, candidates []CandidateLore, k int) []ScoredLore {
+	if len(candidates) == 0 {
+		return []ScoredLore{}
+	}
+
+	scored := make([]ScoredLore, 0, len(candidates))
+	for _, c := range candidates {
+		// Skip empty or mismatched dimension embeddings
+		if len(c.Embedding) == 0 || len(c.Embedding) != len(query) {
+			continue
+		}
+		sim := CosineSimilarity(query, c.Embedding)
+		scored = append(scored, ScoredLore{
+			ID:    c.ID,
+			Score: float64(sim),
+		})
+	}
+
+	// Sort by score descending using sort.Slice
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].Score > scored[j].Score
+	})
+
+	// Apply top-k limit
+	if k > 0 && len(scored) > k {
+		scored = scored[:k]
+	}
+
+	return scored
+}
+
 // RankBySimilarity ranks lore entries by their similarity to a query embedding.
 // Returns entries sorted by similarity (highest first).
-func RankBySimilarity(query []float32, candidates []Lore, k int) []ScoredLore {
+func RankBySimilarity(query []float32, candidates []Lore, k int) []RankedLore {
 	if len(candidates) == 0 {
 		return nil
 	}
 
-	scored := make([]ScoredLore, 0, len(candidates))
+	scored := make([]RankedLore, 0, len(candidates))
 	for _, lore := range candidates {
 		if len(lore.Embedding) == 0 {
 			continue
@@ -77,7 +148,7 @@ func RankBySimilarity(query []float32, candidates []Lore, k int) []ScoredLore {
 			continue
 		}
 		sim := CosineSimilarity(query, embedding)
-		scored = append(scored, ScoredLore{
+		scored = append(scored, RankedLore{
 			Lore:     lore,
 			Score:    sim,
 			Distance: 1 - sim,

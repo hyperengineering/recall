@@ -233,6 +233,16 @@ func (s *Store) getLore(id string) (*Lore, error) {
 // Query retrieves lore matching the given parameters.
 // Note: This performs brute-force similarity search when embeddings are present.
 func (s *Store) Query(params QueryParams) ([]Lore, error) {
+	return s.queryLore(params, false)
+}
+
+// QueryWithEmbeddings retrieves lore that has embeddings, matching the given parameters.
+// This is used for semantic similarity search where embeddings are required.
+func (s *Store) QueryWithEmbeddings(params QueryParams) ([]Lore, error) {
+	return s.queryLore(params, true)
+}
+
+func (s *Store) queryLore(params QueryParams, requireEmbedding bool) ([]Lore, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -248,9 +258,13 @@ func (s *Store) Query(params QueryParams) ([]Lore, error) {
 	`
 	args := []any{}
 
-	if params.MinConfidence > 0 {
+	if requireEmbedding {
+		query += " AND embedding IS NOT NULL"
+	}
+
+	if params.MinConfidence != nil && *params.MinConfidence > 0 {
 		query += " AND confidence >= ?"
-		args = append(args, params.MinConfidence)
+		args = append(args, *params.MinConfidence)
 	}
 
 	if len(params.Categories) > 0 {

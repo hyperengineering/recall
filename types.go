@@ -76,10 +76,11 @@ type RecordParams struct {
 
 // QueryParams configures a lore query.
 type QueryParams struct {
-	Query         string     `json:"query"`
-	K             int        `json:"k,omitempty"`
-	MinConfidence float64    `json:"min_confidence,omitempty"`
-	Categories    []Category `json:"categories,omitempty"`
+	Query          string     `json:"query"`
+	QueryEmbedding []float32  `json:"query_embedding,omitempty"`
+	K              int        `json:"k,omitempty"`
+	MinConfidence  *float64   `json:"min_confidence,omitempty"`
+	Categories     []Category `json:"categories,omitempty"`
 }
 
 // QueryResult contains query results with session tracking.

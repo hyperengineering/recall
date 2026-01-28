@@ -63,10 +63,11 @@ func main() {
 	// Query for relevant lore
 	fmt.Println("\nQuerying for lore about message handling...")
 
+	minConf := 0.5
 	result, err := client.Query(ctx, recall.QueryParams{
 		Query:         "implementing message consumers",
 		K:             5,
-		MinConfidence: 0.5,
+		MinConfidence: &minConf,
 	})
 	if err != nil {
 		log.Fatalf("Failed to query lore: %v", err)

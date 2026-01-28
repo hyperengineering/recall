@@ -152,9 +152,11 @@ func makeQueryHandler(client *recall.Client) Handler {
 		}
 
 		qp := recall.QueryParams{
-			Query:         params.Query,
-			K:             params.K,
-			MinConfidence: params.MinConfidence,
+			Query: params.Query,
+			K:     params.K,
+		}
+		if params.MinConfidence > 0 {
+			qp.MinConfidence = &params.MinConfidence
 		}
 
 		for _, c := range params.Categories {

@@ -94,10 +94,11 @@ func TestLore_JSONMarshal_SnakeCase(t *testing.T) {
 }
 
 func TestQueryParams_JSONMarshal_SnakeCase(t *testing.T) {
+	minConf := 0.5
 	params := recall.QueryParams{
 		Query:         "test query",
 		K:             5,
-		MinConfidence: 0.5,
+		MinConfidence: &minConf,
 		Categories:    []recall.Category{recall.CategoryPatternOutcome},
 	}
 

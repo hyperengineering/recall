@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hyperengineering/recall"
 )
@@ -462,6 +463,472 @@ func TestRecord_EmptyContent_ReturnsValidationError(t *testing.T) {
 	}
 	if ve.Field != "Content" {
 		t.Errorf("ValidationError.Field = %q, want %q", ve.Field, "Content")
+	}
+}
+
+// =============================================================================
+// Story 2.2: Query Lore - Acceptance Tests
+// =============================================================================
+
+// queryTestHelper creates a test client and populates it with test lore entries.
+// It uses Store.InsertLore directly to set embeddings (which Client.Record doesn't support).
+type queryTestHelper struct {
+	t      *testing.T
+	client *recall.Client
+	store  *recall.Store
+}
+
+func newQueryTestHelper(t *testing.T) *queryTestHelper {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Create store directly to insert lore with embeddings
+	store, err := recall.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore() returned error: %v", err)
+	}
+
+	// Create client using the same DB
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		store.Close()
+		t.Fatalf("New() returned error: %v", err)
+	}
+
+	return &queryTestHelper{
+		t:      t,
+		client: client,
+		store:  store,
+	}
+}
+
+func (h *queryTestHelper) close() {
+	h.client.Close() // closes client's internal store
+	h.store.Close()  // closes our separate store used for test setup
+}
+
+// insertLoreWithEmbedding inserts a lore entry with the given embedding vector.
+func (h *queryTestHelper) insertLoreWithEmbedding(id, content string, category recall.Category, confidence float64, embedding []float32) {
+	h.t.Helper()
+	lore := &recall.Lore{
+		ID:         id,
+		Content:    content,
+		Category:   category,
+		Confidence: confidence,
+		Embedding:  recall.PackFloat32(embedding),
+		SourceID:   "test-source",
+		CreatedAt:  timeNow(),
+		UpdatedAt:  timeNow(),
+	}
+	if err := h.store.InsertLore(lore); err != nil {
+		h.t.Fatalf("InsertLore failed: %v", err)
+	}
+}
+
+// insertLoreWithoutEmbedding inserts a lore entry without an embedding.
+func (h *queryTestHelper) insertLoreWithoutEmbedding(id, content string, category recall.Category, confidence float64) {
+	h.t.Helper()
+	lore := &recall.Lore{
+		ID:         id,
+		Content:    content,
+		Category:   category,
+		Confidence: confidence,
+		SourceID:   "test-source",
+		CreatedAt:  timeNow(),
+		UpdatedAt:  timeNow(),
+	}
+	if err := h.store.InsertLore(lore); err != nil {
+		h.t.Fatalf("InsertLore failed: %v", err)
+	}
+}
+
+func timeNow() time.Time {
+	return time.Now().UTC()
+}
+
+// TestQuery_ReturnsResultsRankedBySimilarity tests AC #1:
+// Query returns results ranked by semantic similarity (highest first).
+func TestQuery_ReturnsResultsRankedBySimilarity(t *testing.T) {
+	h := newQueryTestHelper(t)
+	defer h.close()
+
+	// Create test embeddings - vectors that have clear similarity relationships
+	// Query vector: [1, 0, 0]
+	queryVec := []float32{1.0, 0.0, 0.0}
+
+	// High similarity: [0.9, 0.1, 0.0] - close to query
+	highSim := []float32{0.9, 0.1, 0.0}
+	// Medium similarity: [0.5, 0.5, 0.0] - 45 degrees from query
+	medSim := []float32{0.5, 0.5, 0.0}
+	// Low similarity: [0.0, 1.0, 0.0] - orthogonal to query
+	lowSim := []float32{0.0, 1.0, 0.0}
+
+	// Insert in reverse order to prove sorting works
+	h.insertLoreWithEmbedding("low", "Low similarity content", recall.CategoryPatternOutcome, 0.8, lowSim)
+	h.insertLoreWithEmbedding("med", "Medium similarity content", recall.CategoryPatternOutcome, 0.8, medSim)
+	h.insertLoreWithEmbedding("high", "High similarity content", recall.CategoryPatternOutcome, 0.8, highSim)
+
+	result, err := h.client.Query(context.Background(), recall.QueryParams{
+		Query:          "test query",
+		QueryEmbedding: queryVec,
+		K:              10,
+	})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	if len(result.Lore) != 3 {
+		t.Fatalf("Query() returned %d results, want 3", len(result.Lore))
+	}
+
+	// Verify order: high, med, low (by similarity)
+	if result.Lore[0].ID != "high" {
+		t.Errorf("First result ID = %q, want %q", result.Lore[0].ID, "high")
+	}
+	if result.Lore[1].ID != "med" {
+		t.Errorf("Second result ID = %q, want %q", result.Lore[1].ID, "med")
+	}
+	if result.Lore[2].ID != "low" {
+		t.Errorf("Third result ID = %q, want %q", result.Lore[2].ID, "low")
+	}
+}
+
+// TestQuery_TopKLimitsResults tests AC #2:
+// TopK=3 returns at most 3 results.
+func TestQuery_TopKLimitsResults(t *testing.T) {
+	h := newQueryTestHelper(t)
+	defer h.close()
+
+	// Insert 5 entries
+	queryVec := []float32{1.0, 0.0, 0.0}
+	for i := 0; i < 5; i++ {
+		id := string(rune('a' + i))
+		// Vary the embedding slightly so they have different similarities
+		emb := []float32{1.0 - float32(i)*0.1, float32(i) * 0.1, 0.0}
+		h.insertLoreWithEmbedding(id, "Content "+id, recall.CategoryPatternOutcome, 0.8, emb)
+	}
+
+	result, err := h.client.Query(context.Background(), recall.QueryParams{
+		Query:          "test query",
+		QueryEmbedding: queryVec,
+		K:              3,
+	})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	if len(result.Lore) != 3 {
+		t.Errorf("Query() returned %d results, want 3", len(result.Lore))
+	}
+}
+
+// TestQuery_MinConfidenceFiltersResults tests AC #3:
+// MinConfidence=0.7 filters entries below 0.7.
+func TestQuery_MinConfidenceFiltersResults(t *testing.T) {
+	h := newQueryTestHelper(t)
+	defer h.close()
+
+	queryVec := []float32{1.0, 0.0, 0.0}
+	sameEmb := []float32{1.0, 0.0, 0.0} // Same as query for high similarity
+
+	// Insert entries with varying confidence
+	h.insertLoreWithEmbedding("high-conf", "High confidence", recall.CategoryPatternOutcome, 0.9, sameEmb)
+	h.insertLoreWithEmbedding("med-conf", "Medium confidence", recall.CategoryPatternOutcome, 0.7, sameEmb)
+	h.insertLoreWithEmbedding("low-conf", "Low confidence", recall.CategoryPatternOutcome, 0.5, sameEmb)
+
+	minConf := 0.7
+	result, err := h.client.Query(context.Background(), recall.QueryParams{
+		Query:          "test query",
+		QueryEmbedding: queryVec,
+		K:              10,
+		MinConfidence:  &minConf,
+	})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	// Should only return entries with confidence >= 0.7
+	if len(result.Lore) != 2 {
+		t.Errorf("Query() returned %d results, want 2", len(result.Lore))
+	}
+
+	for _, l := range result.Lore {
+		if l.Confidence < 0.7 {
+			t.Errorf("Returned lore with confidence %f, want >= 0.7", l.Confidence)
+		}
+	}
+}
+
+// TestQuery_MinConfidenceZeroAllowsAll tests the fix for zero-value bug:
+// Explicitly setting MinConfidence=0.0 should allow all entries (not override to 0.5).
+func TestQuery_MinConfidenceZeroAllowsAll(t *testing.T) {
+	h := newQueryTestHelper(t)
+	defer h.close()
+
+	queryVec := []float32{1.0, 0.0, 0.0}
+	sameEmb := []float32{1.0, 0.0, 0.0}
+
+	// Insert entries with very low confidence
+	h.insertLoreWithEmbedding("low-conf-1", "Very low confidence 1", recall.CategoryPatternOutcome, 0.1, sameEmb)
+	h.insertLoreWithEmbedding("low-conf-2", "Very low confidence 2", recall.CategoryPatternOutcome, 0.2, sameEmb)
+	h.insertLoreWithEmbedding("high-conf", "High confidence", recall.CategoryPatternOutcome, 0.9, sameEmb)
+
+	minConf := 0.0
+	result, err := h.client.Query(context.Background(), recall.QueryParams{
+		Query:          "test query",
+		QueryEmbedding: queryVec,
+		K:              10,
+		MinConfidence:  &minConf,
+	})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	// With MinConfidence=0.0, should return all 3 entries
+	if len(result.Lore) != 3 {
+		t.Errorf("Query() with MinConfidence=0.0 returned %d results, want 3", len(result.Lore))
+	}
+}
+
+// TestQuery_CategoriesFilterWorks tests AC #4:
+// Categories filter restricts results to specified categories.
+func TestQuery_CategoriesFilterWorks(t *testing.T) {
+	h := newQueryTestHelper(t)
+	defer h.close()
+
+	queryVec := []float32{1.0, 0.0, 0.0}
+	sameEmb := []float32{1.0, 0.0, 0.0}
+
+	// Insert entries with different categories
+	h.insertLoreWithEmbedding("arch", "Architectural decision", recall.CategoryArchitecturalDecision, 0.8, sameEmb)
+	h.insertLoreWithEmbedding("pattern", "Pattern outcome", recall.CategoryPatternOutcome, 0.8, sameEmb)
+	h.insertLoreWithEmbedding("interface", "Interface lesson", recall.CategoryInterfaceLesson, 0.8, sameEmb)
+
+	result, err := h.client.Query(context.Background(), recall.QueryParams{
+		Query:          "test query",
+		QueryEmbedding: queryVec,
+		K:              10,
+		Categories:     []recall.Category{recall.CategoryArchitecturalDecision, recall.CategoryPatternOutcome},
+	})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	// Should only return entries with specified categories
+	if len(result.Lore) != 2 {
+		t.Errorf("Query() returned %d results, want 2", len(result.Lore))
+	}
+
+	for _, l := range result.Lore {
+		if l.Category != recall.CategoryArchitecturalDecision && l.Category != recall.CategoryPatternOutcome {
+			t.Errorf("Returned lore with category %q, want ARCHITECTURAL_DECISION or PATTERN_OUTCOME", l.Category)
+		}
+	}
+}
+
+// TestQuery_CombinedFiltersApplyANDLogic tests AC #5:
+// Multiple filters (categories + minConfidence + topK) apply AND logic.
+func TestQuery_CombinedFiltersApplyANDLogic(t *testing.T) {
+	h := newQueryTestHelper(t)
+	defer h.close()
+
+	queryVec := []float32{1.0, 0.0, 0.0}
+	sameEmb := []float32{1.0, 0.0, 0.0}
+
+	// Insert varied entries
+	// Passes all filters:
+	h.insertLoreWithEmbedding("pass1", "Passes all 1", recall.CategoryPatternOutcome, 0.8, sameEmb)
+	h.insertLoreWithEmbedding("pass2", "Passes all 2", recall.CategoryPatternOutcome, 0.9, sameEmb)
+	// Fails category filter:
+	h.insertLoreWithEmbedding("fail-cat", "Wrong category", recall.CategoryInterfaceLesson, 0.8, sameEmb)
+	// Fails confidence filter:
+	h.insertLoreWithEmbedding("fail-conf", "Low confidence", recall.CategoryPatternOutcome, 0.5, sameEmb)
+
+	minConf := 0.7
+	result, err := h.client.Query(context.Background(), recall.QueryParams{
+		Query:          "test query",
+		QueryEmbedding: queryVec,
+		K:              10,
+		MinConfidence:  &minConf,
+		Categories:     []recall.Category{recall.CategoryPatternOutcome},
+	})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	// Should only return entries that pass ALL filters
+	if len(result.Lore) != 2 {
+		t.Errorf("Query() returned %d results, want 2", len(result.Lore))
+	}
+
+	for _, l := range result.Lore {
+		if l.Category != recall.CategoryPatternOutcome {
+			t.Errorf("Returned lore with category %q, want PATTERN_OUTCOME", l.Category)
+		}
+		if l.Confidence < 0.7 {
+			t.Errorf("Returned lore with confidence %f, want >= 0.7", l.Confidence)
+		}
+	}
+}
+
+// TestQuery_NoMatchesReturnsEmptySlice tests AC #6:
+// No matches returns an empty slice, not an error.
+func TestQuery_NoMatchesReturnsEmptySlice(t *testing.T) {
+	h := newQueryTestHelper(t)
+	defer h.close()
+
+	// Don't insert any lore
+	queryVec := []float32{1.0, 0.0, 0.0}
+
+	result, err := h.client.Query(context.Background(), recall.QueryParams{
+		Query:          "test query",
+		QueryEmbedding: queryVec,
+		K:              10,
+	})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v, want nil", err)
+	}
+
+	if result.Lore == nil {
+		t.Error("Query() returned nil Lore slice, want empty slice")
+	}
+
+	if len(result.Lore) != 0 {
+		t.Errorf("Query() returned %d results, want 0", len(result.Lore))
+	}
+}
+
+// TestQuery_EntriesWithoutEmbeddingsAreExcluded tests AC #7:
+// Entries without embeddings are excluded from similarity search results.
+func TestQuery_EntriesWithoutEmbeddingsAreExcluded(t *testing.T) {
+	h := newQueryTestHelper(t)
+	defer h.close()
+
+	queryVec := []float32{1.0, 0.0, 0.0}
+	sameEmb := []float32{1.0, 0.0, 0.0}
+
+	// Insert entries with and without embeddings
+	h.insertLoreWithEmbedding("with-emb", "Has embedding", recall.CategoryPatternOutcome, 0.8, sameEmb)
+	h.insertLoreWithoutEmbedding("no-emb", "No embedding", recall.CategoryPatternOutcome, 0.8)
+
+	result, err := h.client.Query(context.Background(), recall.QueryParams{
+		Query:          "test query",
+		QueryEmbedding: queryVec,
+		K:              10,
+	})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	// Should only return the entry with embedding
+	if len(result.Lore) != 1 {
+		t.Errorf("Query() returned %d results, want 1", len(result.Lore))
+	}
+
+	if len(result.Lore) > 0 && result.Lore[0].ID != "with-emb" {
+		t.Errorf("Returned lore ID = %q, want %q", result.Lore[0].ID, "with-emb")
+	}
+}
+
+// TestQuery_SessionRefsAreReturned tests that session refs are properly returned.
+func TestQuery_SessionRefsAreReturned(t *testing.T) {
+	h := newQueryTestHelper(t)
+	defer h.close()
+
+	queryVec := []float32{1.0, 0.0, 0.0}
+	sameEmb := []float32{1.0, 0.0, 0.0}
+
+	h.insertLoreWithEmbedding("lore1", "First lore", recall.CategoryPatternOutcome, 0.8, sameEmb)
+	h.insertLoreWithEmbedding("lore2", "Second lore", recall.CategoryPatternOutcome, 0.8, sameEmb)
+
+	result, err := h.client.Query(context.Background(), recall.QueryParams{
+		Query:          "test query",
+		QueryEmbedding: queryVec,
+		K:              10,
+	})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	if len(result.SessionRefs) != 2 {
+		t.Errorf("SessionRefs has %d entries, want 2", len(result.SessionRefs))
+	}
+
+	// Verify session refs map to the correct IDs
+	foundIDs := make(map[string]bool)
+	for _, id := range result.SessionRefs {
+		foundIDs[id] = true
+	}
+	if !foundIDs["lore1"] || !foundIDs["lore2"] {
+		t.Errorf("SessionRefs does not contain expected IDs: %v", result.SessionRefs)
+	}
+}
+
+// TestQuery_ErrorsAreWrapped tests that errors are properly wrapped with context.
+func TestQuery_ErrorsAreWrapped(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+
+	// Close the client to force an error
+	client.Close()
+
+	_, err = client.Query(context.Background(), recall.QueryParams{
+		Query:          "test",
+		QueryEmbedding: []float32{1.0, 0.0, 0.0},
+	})
+	if err == nil {
+		t.Fatal("Query() on closed client returned nil error")
+	}
+
+	// Verify error contains "client: query:" prefix
+	errStr := err.Error()
+	if !strings.Contains(errStr, "client: query:") {
+		t.Errorf("Error should contain 'client: query:' prefix, got: %q", errStr)
+	}
+}
+
+// TestQuery_DefaultsAppliedWhenUnset tests that defaults are applied correctly.
+func TestQuery_DefaultsAppliedWhenUnset(t *testing.T) {
+	h := newQueryTestHelper(t)
+	defer h.close()
+
+	queryVec := []float32{1.0, 0.0, 0.0}
+	sameEmb := []float32{1.0, 0.0, 0.0}
+
+	// Insert 10 entries with varying confidence
+	for i := 0; i < 10; i++ {
+		id := string(rune('a' + i))
+		conf := 0.1 * float64(i+1) // 0.1, 0.2, ..., 1.0
+		h.insertLoreWithEmbedding(id, "Content "+id, recall.CategoryPatternOutcome, conf, sameEmb)
+	}
+
+	// Query without setting K or MinConfidence
+	result, err := h.client.Query(context.Background(), recall.QueryParams{
+		Query:          "test query",
+		QueryEmbedding: queryVec,
+	})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	// Default K=5, default MinConfidence=0.5
+	// Entries with confidence >= 0.5: f(0.6), g(0.7), h(0.8), i(0.9), j(1.0) = 5 entries
+	// With default K=5, should return 5 results
+	if len(result.Lore) != 5 {
+		t.Errorf("Query() with defaults returned %d results, want 5", len(result.Lore))
+	}
+
+	// All returned entries should have confidence >= 0.5
+	for _, l := range result.Lore {
+		if l.Confidence < 0.5 {
+			t.Errorf("Returned lore with confidence %f, want >= 0.5 (default)", l.Confidence)
+		}
 	}
 }
 

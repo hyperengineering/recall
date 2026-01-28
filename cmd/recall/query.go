@@ -42,9 +42,11 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	defer client.Close()
 
 	params := recall.QueryParams{
-		Query:         args[0],
-		K:             queryK,
-		MinConfidence: queryMinConfidence,
+		Query: args[0],
+		K:     queryK,
+	}
+	if queryMinConfidence > 0 {
+		params.MinConfidence = &queryMinConfidence
 	}
 
 	if queryCategories != "" {
