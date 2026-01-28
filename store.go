@@ -69,7 +69,69 @@ func (s *Store) migrate() error {
 	return err
 }
 
+// InsertLore atomically inserts a lore entry and a sync queue entry in one transaction.
+// This is the primary method for storing new lore (used by Client.Record).
+func (s *Store) InsertLore(lore *Lore) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	// Begin transaction
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin transaction: %w", err)
+	}
+	defer tx.Rollback() // no-op if committed
+
+	var embeddingBlob []byte
+	if len(lore.Embedding) > 0 {
+		embeddingBlob = lore.Embedding
+	}
+
+	var sourcesStr *string
+	if len(lore.Sources) > 0 {
+		joined := strings.Join(lore.Sources, ",")
+		sourcesStr = &joined
+	}
+
+	// INSERT lore
+	_, err = tx.Exec(`
+		INSERT INTO lore (id, content, context, category, confidence, embedding, source_id, sources, validation_count, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		lore.ID,
+		lore.Content,
+		nullString(lore.Context),
+		string(lore.Category),
+		lore.Confidence,
+		embeddingBlob,
+		lore.SourceID,
+		sourcesStr,
+		lore.ValidationCount,
+		lore.CreatedAt.Format(time.RFC3339),
+		lore.UpdatedAt.Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert lore: %w", err)
+	}
+
+	// INSERT sync_queue
+	_, err = tx.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at)
+		VALUES (?, ?, ?)
+	`, lore.ID, "INSERT", time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("store: enqueue sync: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // Record stores a new lore entry.
+// Deprecated: Use InsertLore for atomic operations via Client.Record.
 func (s *Store) Record(lore Lore) (*Lore, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

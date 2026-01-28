@@ -179,3 +179,117 @@ func TestNewStore_CreatesDirectory(t *testing.T) {
 		t.Errorf("database file was not created: %v", err)
 	}
 }
+
+// =============================================================================
+// Story 1.4: InsertLore Atomicity Tests
+// =============================================================================
+
+// TestInsertLore_Atomicity_BothEntriesExist tests AC #7:
+// A valid record atomically inserts both a lore entry and a sync queue entry
+// (INSERT operation) in one transaction.
+func TestInsertLore_Atomicity_BothEntriesExist(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	lore := &Lore{
+		ID:         "01TESTID0000000000000001",
+		Content:    "Test content for atomicity",
+		Category:   CategoryArchitecturalDecision,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+
+	err = store.InsertLore(lore)
+	if err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Verify lore entry exists
+	var loreCount int
+	err = store.db.QueryRow("SELECT COUNT(*) FROM lore WHERE id = ?", lore.ID).Scan(&loreCount)
+	if err != nil {
+		t.Fatalf("failed to query lore: %v", err)
+	}
+	if loreCount != 1 {
+		t.Errorf("lore count = %d, want 1", loreCount)
+	}
+
+	// Verify sync_queue entry exists with operation=INSERT
+	var syncCount int
+	var operation string
+	err = store.db.QueryRow(
+		"SELECT COUNT(*), operation FROM sync_queue WHERE lore_id = ?",
+		lore.ID,
+	).Scan(&syncCount, &operation)
+	if err != nil {
+		t.Fatalf("failed to query sync_queue: %v", err)
+	}
+	if syncCount != 1 {
+		t.Errorf("sync_queue count = %d, want 1", syncCount)
+	}
+	if operation != "INSERT" {
+		t.Errorf("sync_queue operation = %q, want %q", operation, "INSERT")
+	}
+}
+
+// TestInsertLore_Atomicity_RollbackOnDuplicate tests AC #8:
+// A database write failure mid-transaction rolls back both the lore entry
+// and sync queue entry. We trigger this by inserting a duplicate ID.
+func TestInsertLore_Atomicity_RollbackOnDuplicate(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	lore := &Lore{
+		ID:         "01TESTID0000000000000002",
+		Content:    "First entry",
+		Category:   CategoryArchitecturalDecision,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+
+	// First insert should succeed
+	err = store.InsertLore(lore)
+	if err != nil {
+		t.Fatalf("first InsertLore failed: %v", err)
+	}
+
+	// Count entries before duplicate attempt
+	var loreBefore, syncBefore int
+	store.db.QueryRow("SELECT COUNT(*) FROM lore").Scan(&loreBefore)
+	store.db.QueryRow("SELECT COUNT(*) FROM sync_queue").Scan(&syncBefore)
+
+	// Second insert with same ID should fail
+	lore2 := &Lore{
+		ID:         "01TESTID0000000000000002", // Same ID - will cause failure
+		Content:    "Second entry - should rollback",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.6,
+		SourceID:   "test-source-2",
+	}
+
+	err = store.InsertLore(lore2)
+	if err == nil {
+		t.Fatal("expected InsertLore to fail on duplicate ID")
+	}
+
+	// Count entries after duplicate attempt
+	var loreAfter, syncAfter int
+	store.db.QueryRow("SELECT COUNT(*) FROM lore").Scan(&loreAfter)
+	store.db.QueryRow("SELECT COUNT(*) FROM sync_queue").Scan(&syncAfter)
+
+	// Verify counts haven't changed (rollback worked)
+	if loreAfter != loreBefore {
+		t.Errorf("lore count changed from %d to %d after failed insert", loreBefore, loreAfter)
+	}
+	if syncAfter != syncBefore {
+		t.Errorf("sync_queue count changed from %d to %d after failed insert", syncBefore, syncAfter)
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 )
 
 // Client is the main interface for interacting with lore.
@@ -52,21 +54,106 @@ func New(cfg Config) (*Client, error) {
 	return c, nil
 }
 
-// Record captures new lore.
-func (c *Client) Record(ctx context.Context, params RecordParams) (*Lore, error) {
-	lore := Lore{
-		Content:    params.Content,
-		Context:    params.Context,
-		Category:   params.Category,
-		Confidence: params.Confidence,
+// RecordOption configures optional parameters for Record.
+type RecordOption func(*recordOptions)
+
+type recordOptions struct {
+	context    string
+	confidence *float64 // nil means use default (0.5)
+}
+
+// WithContext sets the context for the lore entry.
+func WithContext(ctx string) RecordOption {
+	return func(o *recordOptions) {
+		o.context = ctx
+	}
+}
+
+// WithConfidence sets the confidence for the lore entry.
+// Must be in range [0.0, 1.0].
+func WithConfidence(c float64) RecordOption {
+	return func(o *recordOptions) {
+		o.confidence = &c
+	}
+}
+
+// Record captures new lore with content and category.
+// Optional parameters can be provided via WithContext and WithConfidence.
+func (c *Client) Record(content string, category Category, opts ...RecordOption) (*Lore, error) {
+	// Apply options
+	options := recordOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	// Validate inputs (fail fast)
+	if content == "" {
+		return nil, &ValidationError{Field: "Content", Message: "cannot be empty"}
+	}
+	if len(content) > MaxContentLength {
+		return nil, &ValidationError{Field: "Content", Message: "exceeds 4000 character limit"}
+	}
+	if len(options.context) > MaxContextLength {
+		return nil, &ValidationError{Field: "Context", Message: "exceeds 1000 character limit"}
+	}
+	if !category.IsValid() {
+		return nil, &ValidationError{Field: "Category", Message: "invalid: must be one of " + validCategoriesString()}
+	}
+
+	// Validate confidence if provided
+	confidence := ConfidenceDefault
+	if options.confidence != nil {
+		if *options.confidence < ConfidenceMin || *options.confidence > ConfidenceMax {
+			return nil, &ValidationError{Field: "Confidence", Message: "must be between 0.0 and 1.0"}
+		}
+		confidence = *options.confidence
+	}
+
+	// Build lore entry
+	now := time.Now().UTC()
+	lore := &Lore{
+		ID:         ulid.Make().String(),
+		Content:    content,
+		Category:   category,
+		Context:    options.context,
+		Confidence: confidence,
 		SourceID:   c.config.SourceID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 
-	if lore.Confidence == 0 {
-		lore.Confidence = ConfidenceDefault
+	// Atomically insert lore + sync queue entry
+	if err := c.store.InsertLore(lore); err != nil {
+		return nil, fmt.Errorf("client: record: %w", err)
 	}
 
-	return c.store.Record(lore)
+	return lore, nil
+}
+
+// validCategoriesString returns a comma-separated list of valid categories.
+func validCategoriesString() string {
+	cats := ValidCategories()
+	result := ""
+	for i, cat := range cats {
+		if i > 0 {
+			result += ", "
+		}
+		result += string(cat)
+	}
+	return result
+}
+
+// RecordLegacy captures new lore using the legacy API.
+// Deprecated: Use Record(content, category, opts...) instead.
+func (c *Client) RecordLegacy(ctx context.Context, params RecordParams) (*Lore, error) {
+	opts := []RecordOption{}
+	if params.Context != "" {
+		opts = append(opts, WithContext(params.Context))
+	}
+	if params.Confidence != 0 {
+		opts = append(opts, WithConfidence(params.Confidence))
+	}
+	return c.Record(params.Content, params.Category, opts...)
 }
 
 // Query retrieves relevant lore based on semantic similarity.

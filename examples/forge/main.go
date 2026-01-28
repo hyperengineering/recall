@@ -78,17 +78,20 @@ func main() {
 
 	// Agent discovers something new during implementation
 	fmt.Println("\n=== Agent discovers new insight ===")
-	newLore, err := client.Record(ctx, recall.RecordParams{
-		Content:    "JWT tokens should include a jti claim for revocation support in distributed systems",
-		Category:   recall.CategoryPatternOutcome,
-		Context:    "auth-api-implementation",
-		Confidence: 0.7,
-	})
+	newLore, err := client.Record(
+		"JWT tokens should include a jti claim for revocation support in distributed systems",
+		recall.CategoryPatternOutcome,
+		recall.WithContext("auth-api-implementation"),
+		recall.WithConfidence(0.7),
+	)
 	if err != nil {
 		log.Printf("Warning: Failed to record lore: %v", err)
 	} else {
 		fmt.Printf("Recorded new insight: %s\n", newLore.ID)
 	}
+
+	// ctx is used above for Sync and Query
+	_ = ctx
 
 	// Task completion - agent provides feedback
 	fmt.Println("\n=== Task Complete - Providing Feedback ===")

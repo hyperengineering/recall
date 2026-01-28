@@ -49,7 +49,7 @@ func TestValidationError_ErrorsAs(t *testing.T) {
 
 func TestValidationError_ErrorFormat(t *testing.T) {
 	err := &recall.ValidationError{Field: "LocalPath", Message: "required: path to SQLite database"}
-	want := "config: LocalPath: required: path to SQLite database"
+	want := "validation: LocalPath: required: path to SQLite database"
 	if got := err.Error(); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}

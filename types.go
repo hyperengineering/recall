@@ -150,7 +150,7 @@ const (
 	ConfidenceNotRelevantDelta = 0.0
 	ConfidenceMergeBoost      = 0.10
 	ConfidenceDecayPerMonth   = 0.01
-	ConfidenceDefault         = 0.7
+	ConfidenceDefault         = 0.5
 	ConfidenceMin             = 0.0
 	ConfidenceMax             = 1.0
 )

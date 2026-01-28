@@ -49,7 +49,7 @@ type ValidationError struct {
 }
 
 func (e *ValidationError) Error() string {
-	return fmt.Sprintf("config: %s: %s", e.Field, e.Message)
+	return fmt.Sprintf("validation: %s: %s", e.Field, e.Message)
 }
 
 // SyncError is returned when a sync operation fails with details.

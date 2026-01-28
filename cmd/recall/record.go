@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/hyperengineering/recall"
@@ -29,7 +28,7 @@ var (
 func init() {
 	recordCmd.Flags().StringVarP(&recordCategory, "category", "c", "PATTERN_OUTCOME", "Lore category")
 	recordCmd.Flags().StringVar(&recordContext, "context", "", "Additional context (story, epic, situation)")
-	recordCmd.Flags().Float64Var(&recordConfidence, "confidence", 0.7, "Initial confidence (0.0-1.0)")
+	recordCmd.Flags().Float64Var(&recordConfidence, "confidence", 0.5, "Initial confidence (0.0-1.0)")
 }
 
 func runRecord(cmd *cobra.Command, args []string) error {
@@ -39,12 +38,16 @@ func runRecord(cmd *cobra.Command, args []string) error {
 	}
 	defer client.Close()
 
-	lore, err := client.Record(context.Background(), recall.RecordParams{
-		Content:    args[0],
-		Category:   recall.Category(recordCategory),
-		Context:    recordContext,
-		Confidence: recordConfidence,
-	})
+	// Build options
+	opts := []recall.RecordOption{}
+	if recordContext != "" {
+		opts = append(opts, recall.WithContext(recordContext))
+	}
+	if recordConfidence != 0.5 {
+		opts = append(opts, recall.WithConfidence(recordConfidence))
+	}
+
+	lore, err := client.Record(args[0], recall.Category(recordCategory), opts...)
 	if err != nil {
 		return fmt.Errorf("record lore: %w", err)
 	}

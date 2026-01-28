@@ -102,7 +102,7 @@ func RegisterTools(registry Registry, client *recall.Client) {
 			"confidence": {
 				Type:        "number",
 				Description: "Initial confidence (0.0-1.0)",
-				Default:     0.7,
+				Default:     0.5,
 			},
 		},
 		Handler: makeRecordHandler(client),
@@ -174,7 +174,7 @@ type recordParams struct {
 }
 
 func makeRecordHandler(client *recall.Client) Handler {
-	return func(ctx context.Context, rawParams json.RawMessage) (interface{}, error) {
+	return func(_ context.Context, rawParams json.RawMessage) (interface{}, error) {
 		var params recordParams
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			return nil, fmt.Errorf("parse params: %w", err)
@@ -187,12 +187,16 @@ func makeRecordHandler(client *recall.Client) Handler {
 			return nil, fmt.Errorf("category is required")
 		}
 
-		return client.Record(ctx, recall.RecordParams{
-			Content:    params.Content,
-			Category:   recall.Category(params.Category),
-			Context:    params.Context,
-			Confidence: params.Confidence,
-		})
+		// Build options
+		opts := []recall.RecordOption{}
+		if params.Context != "" {
+			opts = append(opts, recall.WithContext(params.Context))
+		}
+		if params.Confidence != recall.ConfidenceDefault {
+			opts = append(opts, recall.WithConfidence(params.Confidence))
+		}
+
+		return client.Record(params.Content, recall.Category(params.Category), opts...)
 	}
 }
 

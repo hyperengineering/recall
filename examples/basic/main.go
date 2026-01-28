@@ -27,35 +27,38 @@ func main() {
 	// Record some lore
 	fmt.Println("Recording lore...")
 
-	lore1, err := client.Record(ctx, recall.RecordParams{
-		Content:  "Queue consumers benefit from idempotency checks to handle redelivered messages",
-		Category: recall.CategoryPatternOutcome,
-		Context:  "message-processing-story",
-	})
+	lore1, err := client.Record(
+		"Queue consumers benefit from idempotency checks to handle redelivered messages",
+		recall.CategoryPatternOutcome,
+		recall.WithContext("message-processing-story"),
+	)
 	if err != nil {
 		log.Fatalf("Failed to record lore: %v", err)
 	}
 	fmt.Printf("Recorded: %s\n", lore1.ID)
 
-	lore2, err := client.Record(ctx, recall.RecordParams{
-		Content:  "ORM generates N+1 queries for belongs_to relationships unless eager loading is configured",
-		Category: recall.CategoryDependencyBehavior,
-		Context:  "performance-investigation",
-	})
+	lore2, err := client.Record(
+		"ORM generates N+1 queries for belongs_to relationships unless eager loading is configured",
+		recall.CategoryDependencyBehavior,
+		recall.WithContext("performance-investigation"),
+	)
 	if err != nil {
 		log.Fatalf("Failed to record lore: %v", err)
 	}
 	fmt.Printf("Recorded: %s\n", lore2.ID)
 
-	lore3, err := client.Record(ctx, recall.RecordParams{
-		Content:  "Integration tests for async workers need to verify idempotency by sending duplicate messages",
-		Category: recall.CategoryTestingStrategy,
-		Context:  "worker-testing",
-	})
+	lore3, err := client.Record(
+		"Integration tests for async workers need to verify idempotency by sending duplicate messages",
+		recall.CategoryTestingStrategy,
+		recall.WithContext("worker-testing"),
+	)
 	if err != nil {
 		log.Fatalf("Failed to record lore: %v", err)
 	}
 	fmt.Printf("Recorded: %s\n", lore3.ID)
+
+	// ctx is used below for Query/Feedback
+	_ = ctx
 
 	// Query for relevant lore
 	fmt.Println("\nQuerying for lore about message handling...")
