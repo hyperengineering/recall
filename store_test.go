@@ -293,3 +293,228 @@ func TestInsertLore_Atomicity_RollbackOnDuplicate(t *testing.T) {
 		t.Errorf("sync_queue count changed from %d to %d after failed insert", syncBefore, syncAfter)
 	}
 }
+
+// =============================================================================
+// Story 3.1: UpdateConfidence Tests
+// =============================================================================
+
+// TestStore_UpdateConfidence_PositiveDelta tests that positive delta increases confidence.
+func TestStore_UpdateConfidence_PositiveDelta(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore with confidence 0.5
+	lore := &Lore{
+		ID:         "01TESTID0000000000000001",
+		Content:    "Test content",
+		Category:   CategoryArchitecturalDecision,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Apply +0.08 delta
+	updated, err := store.UpdateConfidence(lore.ID, 0.08)
+	if err != nil {
+		t.Fatalf("UpdateConfidence failed: %v", err)
+	}
+
+	// Verify confidence is now 0.58
+	if updated.Confidence != 0.58 {
+		t.Errorf("Confidence = %f, want 0.58", updated.Confidence)
+	}
+}
+
+// TestStore_UpdateConfidence_NegativeDelta tests that negative delta decreases confidence.
+func TestStore_UpdateConfidence_NegativeDelta(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore with confidence 0.5
+	lore := &Lore{
+		ID:         "01TESTID0000000000000001",
+		Content:    "Test content",
+		Category:   CategoryArchitecturalDecision,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Apply -0.15 delta
+	updated, err := store.UpdateConfidence(lore.ID, -0.15)
+	if err != nil {
+		t.Fatalf("UpdateConfidence failed: %v", err)
+	}
+
+	// Verify confidence is now 0.35
+	if updated.Confidence != 0.35 {
+		t.Errorf("Confidence = %f, want 0.35", updated.Confidence)
+	}
+}
+
+// TestStore_UpdateConfidence_CapsAtOne tests that confidence is capped at 1.0.
+func TestStore_UpdateConfidence_CapsAtOne(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore with confidence 0.95
+	lore := &Lore{
+		ID:         "01TESTID0000000000000001",
+		Content:    "Test content",
+		Category:   CategoryArchitecturalDecision,
+		Confidence: 0.95,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Apply +0.08 delta (would be 1.03 without capping)
+	updated, err := store.UpdateConfidence(lore.ID, 0.08)
+	if err != nil {
+		t.Fatalf("UpdateConfidence failed: %v", err)
+	}
+
+	// Verify confidence is capped at 1.0
+	if updated.Confidence != 1.0 {
+		t.Errorf("Confidence = %f, want 1.0 (capped)", updated.Confidence)
+	}
+}
+
+// TestStore_UpdateConfidence_FloorsAtZero tests that confidence is floored at 0.0.
+func TestStore_UpdateConfidence_FloorsAtZero(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore with confidence 0.05
+	lore := &Lore{
+		ID:         "01TESTID0000000000000001",
+		Content:    "Test content",
+		Category:   CategoryArchitecturalDecision,
+		Confidence: 0.05,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Apply -0.15 delta (would be -0.10 without flooring)
+	updated, err := store.UpdateConfidence(lore.ID, -0.15)
+	if err != nil {
+		t.Fatalf("UpdateConfidence failed: %v", err)
+	}
+
+	// Verify confidence is floored at 0.0
+	if updated.Confidence != 0.0 {
+		t.Errorf("Confidence = %f, want 0.0 (floored)", updated.Confidence)
+	}
+}
+
+// TestStore_UpdateConfidence_ZeroDelta tests that zero delta leaves confidence unchanged.
+func TestStore_UpdateConfidence_ZeroDelta(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore with confidence 0.5
+	lore := &Lore{
+		ID:         "01TESTID0000000000000001",
+		Content:    "Test content",
+		Category:   CategoryArchitecturalDecision,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Apply zero delta
+	updated, err := store.UpdateConfidence(lore.ID, 0.0)
+	if err != nil {
+		t.Fatalf("UpdateConfidence failed: %v", err)
+	}
+
+	// Verify confidence is unchanged
+	if updated.Confidence != 0.5 {
+		t.Errorf("Confidence = %f, want 0.5 (unchanged)", updated.Confidence)
+	}
+}
+
+// TestStore_UpdateConfidence_NotFound tests that invalid ID returns ErrNotFound.
+func TestStore_UpdateConfidence_NotFound(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Try to update non-existent lore
+	_, err = store.UpdateConfidence("01NONEXISTENT00000000000", 0.08)
+	if err != ErrNotFound {
+		t.Errorf("UpdateConfidence error = %v, want ErrNotFound", err)
+	}
+}
+
+// TestStore_UpdateConfidence_UpdatesTimestamp tests that updated_at is updated.
+func TestStore_UpdateConfidence_UpdatesTimestamp(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore
+	lore := &Lore{
+		ID:         "01TESTID0000000000000001",
+		Content:    "Test content",
+		Category:   CategoryArchitecturalDecision,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Get original timestamp
+	original, err := store.Get(lore.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	originalUpdatedAt := original.UpdatedAt
+
+	// Apply delta
+	updated, err := store.UpdateConfidence(lore.ID, 0.08)
+	if err != nil {
+		t.Fatalf("UpdateConfidence failed: %v", err)
+	}
+
+	// Verify updated_at has changed
+	if !updated.UpdatedAt.After(originalUpdatedAt) {
+		t.Errorf("UpdatedAt = %v, want after %v", updated.UpdatedAt, originalUpdatedAt)
+	}
+}

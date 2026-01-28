@@ -90,7 +90,7 @@ func main() {
 	}
 
 	if len(helpfulRefs) > 0 {
-		feedbackResult, err := client.Feedback(ctx, recall.FeedbackParams{
+		feedbackResult, err := client.FeedbackBatch(ctx, recall.FeedbackParams{
 			Helpful: helpfulRefs,
 		})
 		if err != nil {

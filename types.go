@@ -64,7 +64,24 @@ const (
 	FeedbackHelpful     FeedbackType = "helpful"
 	FeedbackIncorrect   FeedbackType = "incorrect"
 	FeedbackNotRelevant FeedbackType = "not_relevant"
+
+	// Aliases for cleaner API
+	Helpful     = FeedbackHelpful
+	Incorrect   = FeedbackIncorrect
+	NotRelevant = FeedbackNotRelevant
 )
+
+// feedbackDelta returns the confidence delta for a feedback type.
+func feedbackDelta(ft FeedbackType) float64 {
+	switch ft {
+	case Helpful:
+		return ConfidenceHelpfulDelta
+	case Incorrect:
+		return ConfidenceIncorrectDelta
+	default:
+		return ConfidenceNotRelevantDelta
+	}
+}
 
 // RecordParams contains parameters for recording new lore.
 type RecordParams struct {

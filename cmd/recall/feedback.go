@@ -60,7 +60,7 @@ func runFeedback(cmd *cobra.Command, args []string) error {
 		params.Incorrect = splitAndTrim(feedbackIncorrect)
 	}
 
-	result, err := client.Feedback(context.Background(), params)
+	result, err := client.FeedbackBatch(context.Background(), params)
 	if err != nil {
 		return fmt.Errorf("apply feedback: %w", err)
 	}

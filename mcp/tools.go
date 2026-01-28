@@ -216,7 +216,7 @@ func makeFeedbackHandler(client *recall.Client) Handler {
 			return nil, fmt.Errorf("parse params: %w", err)
 		}
 
-		return client.Feedback(ctx, recall.FeedbackParams{
+		return client.FeedbackBatch(ctx, recall.FeedbackParams{
 			Helpful:     params.Helpful,
 			NotRelevant: params.NotRelevant,
 			Incorrect:   params.Incorrect,

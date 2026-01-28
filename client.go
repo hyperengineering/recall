@@ -245,8 +245,71 @@ func (c *Client) queryWithSimilarity(params QueryParams) ([]Lore, error) {
 	return result, nil
 }
 
-// Feedback provides feedback on recalled lore.
-func (c *Client) Feedback(ctx context.Context, params FeedbackParams) (*FeedbackResult, error) {
+// Feedback applies feedback to a single lore entry, adjusting its confidence.
+//
+// The ref parameter can be:
+//   - An L-ref (L1, L2, etc.) from the current session
+//   - A lore ID (26-character ULID) directly
+//
+// Confidence adjustments:
+//   - Helpful:     +0.08
+//   - Incorrect:   -0.15
+//   - NotRelevant:  0.00 (unchanged)
+//
+// Returns the updated Lore entry with new confidence value.
+// Returns ErrNotFound if:
+//   - L-ref does not exist in the current session
+//   - Lore ID does not exist in the store
+func (c *Client) Feedback(ref string, ft FeedbackType) (*Lore, error) {
+	var loreID string
+
+	if isLRef(ref) {
+		// Try direct resolve first
+		id, ok := c.session.Resolve(ref)
+		if !ok {
+			// Try fuzzy match as fallback
+			contentLookup := func(id string) string {
+				lore, err := c.store.Get(id)
+				if err != nil {
+					return ""
+				}
+				return lore.Content
+			}
+			id, ok = c.session.FuzzyMatch(ref, contentLookup)
+			if !ok {
+				return nil, ErrNotFound
+			}
+		}
+		loreID = id
+	} else {
+		// Assume it's a lore ID - validate it exists
+		loreID = ref
+	}
+
+	delta := feedbackDelta(ft)
+	lore, err := c.store.UpdateConfidence(loreID, delta)
+	if err != nil {
+		return nil, fmt.Errorf("client: feedback: %w", err)
+	}
+	return lore, nil
+}
+
+// isLRef returns true if ref matches L-ref format (L followed by digits).
+func isLRef(ref string) bool {
+	if len(ref) < 2 || ref[0] != 'L' {
+		return false
+	}
+	for _, ch := range ref[1:] {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// FeedbackBatch provides batch feedback on recalled lore.
+// Deprecated: Use Feedback() for single-entry feedback.
+func (c *Client) FeedbackBatch(ctx context.Context, params FeedbackParams) (*FeedbackResult, error) {
 	return c.store.ApplyFeedback(c.session, params)
 }
 

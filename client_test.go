@@ -932,3 +932,271 @@ func TestQuery_DefaultsAppliedWhenUnset(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Story 3.1: Feedback & Confidence Adjustment - Acceptance Tests
+// =============================================================================
+
+// feedbackTestHelper creates a test client for feedback tests.
+type feedbackTestHelper struct {
+	t      *testing.T
+	client *recall.Client
+	store  *recall.Store
+}
+
+func newFeedbackTestHelper(t *testing.T) *feedbackTestHelper {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Create store directly to insert lore with specific confidence
+	store, err := recall.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore() returned error: %v", err)
+	}
+
+	// Create client using the same DB
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		store.Close()
+		t.Fatalf("New() returned error: %v", err)
+	}
+
+	return &feedbackTestHelper{
+		t:      t,
+		client: client,
+		store:  store,
+	}
+}
+
+func (h *feedbackTestHelper) close() {
+	h.client.Close()
+	h.store.Close()
+}
+
+// insertLoreWithConfidence inserts a lore entry with a specific confidence.
+func (h *feedbackTestHelper) insertLoreWithConfidence(id, content string, confidence float64) {
+	h.t.Helper()
+	lore := &recall.Lore{
+		ID:         id,
+		Content:    content,
+		Category:   recall.CategoryPatternOutcome,
+		Confidence: confidence,
+		SourceID:   "test-source",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := h.store.InsertLore(lore); err != nil {
+		h.t.Fatalf("InsertLore failed: %v", err)
+	}
+}
+
+// TestFeedback_Helpful_IncreasesConfidenceBy008 tests AC #1:
+// client.Feedback("L2", recall.Helpful) increases lore's confidence by 0.08
+func TestFeedback_Helpful_IncreasesConfidenceBy008(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	// Insert lore with confidence 0.5
+	h.insertLoreWithConfidence("01LORE00000000000000001", "Test lore content", 0.5)
+
+	// Query to track in session (creates L1 ref)
+	ctx := context.Background()
+	_, err := h.client.Query(ctx, recall.QueryParams{Query: "test"})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	// Apply helpful feedback via L-ref
+	updated, err := h.client.Feedback("L1", recall.Helpful)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify confidence increased by 0.08
+	if updated.Confidence != 0.58 {
+		t.Errorf("Confidence = %f, want 0.58", updated.Confidence)
+	}
+}
+
+// TestFeedback_Incorrect_DecreasesConfidenceBy015 tests AC #2:
+// client.Feedback("L3", recall.Incorrect) decreases lore's confidence by 0.15
+func TestFeedback_Incorrect_DecreasesConfidenceBy015(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	// Insert lore with confidence 0.5
+	h.insertLoreWithConfidence("01LORE00000000000000001", "Test lore content", 0.5)
+
+	// Query to track in session (creates L1 ref)
+	ctx := context.Background()
+	_, err := h.client.Query(ctx, recall.QueryParams{Query: "test"})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	// Apply incorrect feedback via L-ref
+	updated, err := h.client.Feedback("L1", recall.Incorrect)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify confidence decreased by 0.15
+	if updated.Confidence != 0.35 {
+		t.Errorf("Confidence = %f, want 0.35", updated.Confidence)
+	}
+}
+
+// TestFeedback_NotRelevant_LeavesConfidenceUnchanged tests AC #3:
+// client.Feedback("L1", recall.NotRelevant) leaves confidence unchanged
+func TestFeedback_NotRelevant_LeavesConfidenceUnchanged(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	// Insert lore with confidence 0.5
+	h.insertLoreWithConfidence("01LORE00000000000000001", "Test lore content", 0.5)
+
+	// Query to track in session (creates L1 ref)
+	ctx := context.Background()
+	_, err := h.client.Query(ctx, recall.QueryParams{Query: "test"})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	// Apply not-relevant feedback via L-ref
+	updated, err := h.client.Feedback("L1", recall.NotRelevant)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify confidence is unchanged
+	if updated.Confidence != 0.5 {
+		t.Errorf("Confidence = %f, want 0.5 (unchanged)", updated.Confidence)
+	}
+}
+
+// TestFeedback_CapAtMax tests AC #4:
+// Confidence at 0.95 + helpful (+0.08) is capped at 1.0
+func TestFeedback_CapAtMax(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	// Insert lore with confidence 0.95
+	h.insertLoreWithConfidence("01LORE00000000000000001", "Test lore content", 0.95)
+
+	// Query to track in session
+	ctx := context.Background()
+	_, err := h.client.Query(ctx, recall.QueryParams{Query: "test"})
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+
+	// Apply helpful feedback (would be 1.03 without capping)
+	updated, err := h.client.Feedback("L1", recall.Helpful)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify confidence is capped at 1.0
+	if updated.Confidence != 1.0 {
+		t.Errorf("Confidence = %f, want 1.0 (capped)", updated.Confidence)
+	}
+}
+
+// TestFeedback_FloorAtMin tests AC #5:
+// Confidence at 0.05 + incorrect (-0.15) is floored at 0.0
+func TestFeedback_FloorAtMin(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	loreID := "01LORE00000000000000001"
+	// Insert lore with confidence 0.05
+	h.insertLoreWithConfidence(loreID, "Test lore content", 0.05)
+
+	// Use lore ID directly (bypasses session tracking and MinConfidence filter)
+	updated, err := h.client.Feedback(loreID, recall.Incorrect)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify confidence is floored at 0.0
+	if updated.Confidence != 0.0 {
+		t.Errorf("Confidence = %f, want 0.0 (floored)", updated.Confidence)
+	}
+}
+
+// TestFeedback_ByLoreID_WorksWithoutSession tests AC #6:
+// client.Feedback(loreID, recall.Helpful) applies feedback directly by lore ID
+// without session reference
+func TestFeedback_ByLoreID_WorksWithoutSession(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	loreID := "01LORE00000000000000001"
+	// Insert lore with confidence 0.5
+	h.insertLoreWithConfidence(loreID, "Test lore content", 0.5)
+
+	// Apply feedback directly by lore ID (no query/session tracking)
+	updated, err := h.client.Feedback(loreID, recall.Helpful)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify confidence increased
+	if updated.Confidence != 0.58 {
+		t.Errorf("Confidence = %f, want 0.58", updated.Confidence)
+	}
+}
+
+// TestFeedback_InvalidLRef_ReturnsErrNotFound tests AC #7:
+// client.Feedback("L99", ...) with invalid session reference returns ErrNotFound
+func TestFeedback_InvalidLRef_ReturnsErrNotFound(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	// Don't track anything in session - L99 won't exist
+	_, err := h.client.Feedback("L99", recall.Helpful)
+	if !errors.Is(err, recall.ErrNotFound) {
+		t.Errorf("Feedback() error = %v, want ErrNotFound", err)
+	}
+}
+
+// TestFeedback_InvalidLoreID_ReturnsErrNotFound tests AC #8:
+// client.Feedback(invalidLoreID, ...) with invalid lore ID returns ErrNotFound
+func TestFeedback_InvalidLoreID_ReturnsErrNotFound(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	// Use a valid ULID format but non-existent ID
+	_, err := h.client.Feedback("01NONEXISTENT00000000000", recall.Helpful)
+	if !errors.Is(err, recall.ErrNotFound) {
+		t.Errorf("Feedback() error = %v, want ErrNotFound", err)
+	}
+}
+
+// TestFeedback_ReturnsUpdatedLore tests implicit requirement:
+// Verify returned *Lore has updated confidence and timestamps
+func TestFeedback_ReturnsUpdatedLore(t *testing.T) {
+	h := newFeedbackTestHelper(t)
+	defer h.close()
+
+	loreID := "01LORE00000000000000001"
+	h.insertLoreWithConfidence(loreID, "Test lore content", 0.5)
+
+	// Apply feedback
+	updated, err := h.client.Feedback(loreID, recall.Helpful)
+	if err != nil {
+		t.Fatalf("Feedback() returned error: %v", err)
+	}
+
+	// Verify we got a complete Lore back
+	if updated.ID != loreID {
+		t.Errorf("ID = %q, want %q", updated.ID, loreID)
+	}
+	if updated.Content != "Test lore content" {
+		t.Errorf("Content = %q, want %q", updated.Content, "Test lore content")
+	}
+	if updated.Confidence != 0.58 {
+		t.Errorf("Confidence = %f, want 0.58", updated.Confidence)
+	}
+}
+
