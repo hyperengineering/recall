@@ -2,6 +2,7 @@ package recall
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -28,7 +29,7 @@ func New(cfg Config) (*Client, error) {
 
 	store, err := NewStore(cfg.LocalPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("client: %w", err)
 	}
 
 	c := &Client{
