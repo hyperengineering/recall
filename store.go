@@ -2,6 +2,7 @@ package recall
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -362,11 +363,28 @@ func (s *Store) ApplyFeedback(loreID string, delta float64, isHelpful bool) (*Lo
 		return nil, fmt.Errorf("store: update confidence: %w", err)
 	}
 
+	// Determine outcome for sync based on feedback signal:
+	// - isHelpful=true -> "helpful" (user explicitly marked as useful)
+	// - delta < 0 -> "incorrect" (negative feedback, confidence decreased)
+	// - delta = 0 -> "not_relevant" (neutral/no impact on confidence)
+	var outcome string
+	switch {
+	case isHelpful:
+		outcome = "helpful"
+	case delta < 0:
+		outcome = "incorrect"
+	default:
+		outcome = "not_relevant"
+	}
+
+	// Queue with payload
+	payloadJSON, _ := json.Marshal(FeedbackQueuePayload{Outcome: outcome})
+
 	// INSERT sync_queue entry
 	_, err = tx.Exec(`
-		INSERT INTO sync_queue (lore_id, operation, queued_at)
-		VALUES (?, 'FEEDBACK', ?)
-	`, loreID, nowStr)
+		INSERT INTO sync_queue (lore_id, operation, payload, queued_at)
+		VALUES (?, 'FEEDBACK', ?, ?)
+	`, loreID, string(payloadJSON), nowStr)
 	if err != nil {
 		return nil, fmt.Errorf("store: enqueue sync: %w", err)
 	}
@@ -924,4 +942,173 @@ func nullString(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// PendingSyncEntries returns all entries from the sync queue.
+func (s *Store) PendingSyncEntries() ([]SyncQueueEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	rows, err := s.db.Query(`
+		SELECT id, lore_id, operation, payload, queued_at, attempts, last_error
+		FROM sync_queue
+		ORDER BY queued_at ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query sync queue: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []SyncQueueEntry
+	for rows.Next() {
+		var e SyncQueueEntry
+		var payload sql.NullString
+		var lastError sql.NullString
+		var queuedAt string
+
+		if err := rows.Scan(&e.ID, &e.LoreID, &e.Operation, &payload, &queuedAt, &e.Attempts, &lastError); err != nil {
+			return nil, fmt.Errorf("scan sync queue: %w", err)
+		}
+
+		e.Payload = payload.String
+		e.LastError = lastError.String
+		e.QueuedAt, _ = time.Parse(time.RFC3339, queuedAt)
+		entries = append(entries, e)
+	}
+
+	return entries, rows.Err()
+}
+
+// CompleteSyncEntries removes entries from the sync queue and updates synced_at.
+// Called after successful push to Engram.
+func (s *Store) CompleteSyncEntries(queueIDs []int64, loreIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	if len(queueIDs) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Delete from sync_queue
+	queuePlaceholders := make([]string, len(queueIDs))
+	queueArgs := make([]any, len(queueIDs))
+	for i, id := range queueIDs {
+		queuePlaceholders[i] = "?"
+		queueArgs[i] = id
+	}
+	_, err = tx.Exec(
+		fmt.Sprintf("DELETE FROM sync_queue WHERE id IN (%s)", strings.Join(queuePlaceholders, ",")),
+		queueArgs...,
+	)
+	if err != nil {
+		return fmt.Errorf("delete sync queue: %w", err)
+	}
+
+	// Update synced_at on lore entries
+	if len(loreIDs) > 0 {
+		lorePlaceholders := make([]string, len(loreIDs))
+		loreArgs := []any{now}
+		for i, id := range loreIDs {
+			lorePlaceholders[i] = "?"
+			loreArgs = append(loreArgs, id)
+		}
+		_, err = tx.Exec(
+			fmt.Sprintf("UPDATE lore SET synced_at = ? WHERE id IN (%s)", strings.Join(lorePlaceholders, ",")),
+			loreArgs...,
+		)
+		if err != nil {
+			return fmt.Errorf("update synced_at: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// FailSyncEntries increments attempt count and records error for failed entries.
+func (s *Store) FailSyncEntries(queueIDs []int64, lastError string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	if len(queueIDs) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(queueIDs))
+	args := []any{lastError}
+	for i, id := range queueIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+
+	_, err := s.db.Exec(
+		fmt.Sprintf(`
+			UPDATE sync_queue
+			SET attempts = attempts + 1, last_error = ?
+			WHERE id IN (%s)
+		`, strings.Join(placeholders, ",")),
+		args...,
+	)
+	return err
+}
+
+// GetLoreByIDs retrieves multiple lore entries by ID.
+func (s *Store) GetLoreByIDs(ids []string) ([]Lore, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	rows, err := s.db.Query(fmt.Sprintf(`
+		SELECT id, content, context, category, confidence, embedding, source_id, sources,
+		       validation_count, last_validated, created_at, updated_at, synced_at
+		FROM lore WHERE id IN (%s)
+	`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query lore: %w", err)
+	}
+	defer rows.Close()
+
+	var results []Lore
+	for rows.Next() {
+		lore, err := s.scanLoreRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, *lore)
+	}
+
+	return results, rows.Err()
 }

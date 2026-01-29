@@ -45,7 +45,7 @@ func New(cfg Config) (*Client, error) {
 	}
 
 	if !cfg.IsOffline() {
-		c.syncer = NewSyncer(store, cfg.EngramURL, cfg.APIKey)
+		c.syncer = NewSyncer(store, cfg.EngramURL, cfg.APIKey, cfg.SourceID)
 	}
 
 	// Start background sync if enabled

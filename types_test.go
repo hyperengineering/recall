@@ -119,3 +119,55 @@ func TestQueryParams_JSONMarshal_SnakeCase(t *testing.T) {
 		}
 	}
 }
+
+func TestSyncQueueEntry_JSONMarshal_SnakeCase(t *testing.T) {
+	entry := recall.SyncQueueEntry{
+		ID:        1,
+		LoreID:    "lore-123",
+		Operation: "INSERT",
+		Payload:   `{"outcome":"helpful"}`,
+		Attempts:  2,
+		LastError: "network timeout",
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+
+	expectedKeys := []string{"id", "lore_id", "operation", "payload", "queued_at", "attempts", "last_error"}
+	for _, key := range expectedKeys {
+		if _, ok := m[key]; !ok {
+			t.Errorf("JSON key %q not found in marshaled SyncQueueEntry", key)
+		}
+	}
+}
+
+func TestFeedbackQueuePayload_JSONMarshal(t *testing.T) {
+	payload := recall.FeedbackQueuePayload{
+		Outcome: "helpful",
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+
+	if _, ok := m["outcome"]; !ok {
+		t.Error("JSON key \"outcome\" not found in marshaled FeedbackQueuePayload")
+	}
+
+	if m["outcome"] != "helpful" {
+		t.Errorf("outcome = %q, want %q", m["outcome"], "helpful")
+	}
+}

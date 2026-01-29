@@ -15,15 +15,17 @@ type Syncer struct {
 	store     *Store
 	engramURL string
 	apiKey    string
+	sourceID  string
 	client    *http.Client
 }
 
 // NewSyncer creates a new syncer.
-func NewSyncer(store *Store, engramURL, apiKey string) *Syncer {
+func NewSyncer(store *Store, engramURL, apiKey, sourceID string) *Syncer {
 	return &Syncer{
 		store:     store,
 		engramURL: engramURL,
 		apiKey:    apiKey,
+		sourceID:  sourceID,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -120,20 +122,86 @@ func (s *Syncer) Health(ctx context.Context) (*engramHealthResponse, error) {
 	return &health, nil
 }
 
-// Push sends pending lore to Engram.
+// Push sends pending lore and feedback to Engram.
+//
+// Process:
+//  1. Read all pending entries from sync_queue
+//  2. Group by operation type (INSERT vs FEEDBACK)
+//  3. For INSERT: fetch lore, call POST /api/v1/lore
+//  4. For FEEDBACK: decode payloads, call POST /api/v1/lore/feedback
+//  5. On success: delete queue entries, update synced_at
+//  6. On failure: increment attempts, record error
+//
+// Returns nil if queue is empty.
+// Returns SyncError if Engram is unreachable.
 func (s *Syncer) Push(ctx context.Context) error {
-	unsynced, err := s.store.Unsynced()
+	entries, err := s.store.PendingSyncEntries()
 	if err != nil {
-		return err
+		return fmt.Errorf("push: read queue: %w", err)
 	}
 
-	if len(unsynced) == 0 {
+	if len(entries) == 0 {
 		return nil
 	}
 
+	// Group by operation
+	var insertEntries []SyncQueueEntry
+	var feedbackEntries []SyncQueueEntry
+	for _, e := range entries {
+		switch e.Operation {
+		case "INSERT":
+			insertEntries = append(insertEntries, e)
+		case "FEEDBACK":
+			feedbackEntries = append(feedbackEntries, e)
+		}
+	}
+
+	var pushErr error
+
+	// Push INSERT operations
+	if len(insertEntries) > 0 {
+		if err := s.pushLoreEntries(ctx, insertEntries); err != nil {
+			pushErr = err
+		}
+	}
+
+	// Push FEEDBACK operations
+	if len(feedbackEntries) > 0 {
+		if err := s.pushFeedbackEntries(ctx, feedbackEntries); err != nil {
+			if pushErr == nil {
+				pushErr = err
+			}
+		}
+	}
+
+	return pushErr
+}
+
+func (s *Syncer) pushLoreEntries(ctx context.Context, entries []SyncQueueEntry) error {
+	// Collect lore IDs
+	loreIDs := make([]string, len(entries))
+	for i, e := range entries {
+		loreIDs[i] = e.LoreID
+	}
+
+	// Fetch lore
+	loreList, err := s.store.GetLoreByIDs(loreIDs)
+	if err != nil {
+		return fmt.Errorf("fetch lore: %w", err)
+	}
+
+	if len(loreList) == 0 {
+		// Lore was deleted; clear queue entries
+		queueIDs := make([]int64, len(entries))
+		for i, e := range entries {
+			queueIDs[i] = e.ID
+		}
+		return s.store.CompleteSyncEntries(queueIDs, nil)
+	}
+
 	// Convert to DTO format
-	loreDTOs := make([]engramLoreDTO, len(unsynced))
-	for i, l := range unsynced {
+	loreDTOs := make([]engramLoreDTO, len(loreList))
+	for i, l := range loreList {
 		loreDTOs[i] = engramLoreDTO{
 			ID:         l.ID,
 			Content:    l.Content,
@@ -144,50 +212,129 @@ func (s *Syncer) Push(ctx context.Context) error {
 		}
 	}
 
-	stats, _ := s.store.Stats()
-	sourceID := ""
-	if stats != nil {
-		sourceID = stats.SchemaVersion // Use a proper source ID in production
-	}
-
+	// Build request
 	body, err := json.Marshal(engramIngestRequest{
-		SourceID: sourceID,
+		SourceID: s.sourceID,
 		Lore:     loreDTOs,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal request: %w", err)
 	}
 
+	// Send to Engram
 	req, err := http.NewRequestWithContext(ctx, "POST", s.engramURL+"/api/v1/lore", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return s.failEntries(entries, err.Error())
 	}
 	s.setHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return err
+		return s.failEntries(entries, err.Error())
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("push failed: %s - %s", resp.Status, string(respBody))
+		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		return s.failEntries(entries, errMsg)
 	}
 
-	var result engramIngestResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return err
+	// Success: clear queue entries
+	queueIDs := make([]int64, len(entries))
+	syncedLoreIDs := make([]string, len(loreList))
+	for i, e := range entries {
+		queueIDs[i] = e.ID
+	}
+	for i, l := range loreList {
+		syncedLoreIDs[i] = l.ID
 	}
 
-	// Mark as synced
-	ids := make([]string, len(unsynced))
-	for i, l := range unsynced {
-		ids[i] = l.ID
+	return s.store.CompleteSyncEntries(queueIDs, syncedLoreIDs)
+}
+
+func (s *Syncer) pushFeedbackEntries(ctx context.Context, entries []SyncQueueEntry) error {
+	// Decode feedback payloads
+	feedbackDTOs := make([]engramFeedbackEntryDTO, 0, len(entries))
+	for _, e := range entries {
+		var payload FeedbackQueuePayload
+		if e.Payload != "" {
+			if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
+				// Skip malformed entries silently to prevent infinite retry loops
+				// on corrupted data - these entries will be cleared with the batch
+				continue
+			}
+		}
+		feedbackDTOs = append(feedbackDTOs, engramFeedbackEntryDTO{
+			ID:      e.LoreID,
+			Outcome: payload.Outcome,
+		})
 	}
 
-	return s.store.MarkSynced(ids, time.Now().UTC())
+	if len(feedbackDTOs) == 0 {
+		// All entries were malformed; clear them
+		queueIDs := make([]int64, len(entries))
+		for i, e := range entries {
+			queueIDs[i] = e.ID
+		}
+		return s.store.CompleteSyncEntries(queueIDs, nil)
+	}
+
+	// Build request
+	body, err := json.Marshal(engramFeedbackRequest{
+		SourceID: s.sourceID,
+		Feedback: feedbackDTOs,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	// Send to Engram
+	req, err := http.NewRequestWithContext(ctx, "POST", s.engramURL+"/api/v1/lore/feedback", bytes.NewReader(body))
+	if err != nil {
+		return s.failEntries(entries, err.Error())
+	}
+	s.setHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return s.failEntries(entries, err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		return s.failEntries(entries, errMsg)
+	}
+
+	// Success: clear queue entries (no synced_at update for feedback)
+	queueIDs := make([]int64, len(entries))
+	for i, e := range entries {
+		queueIDs[i] = e.ID
+	}
+
+	return s.store.CompleteSyncEntries(queueIDs, nil)
+}
+
+func (s *Syncer) failEntries(entries []SyncQueueEntry, errMsg string) error {
+	queueIDs := make([]int64, len(entries))
+	for i, e := range entries {
+		queueIDs[i] = e.ID
+	}
+	if err := s.store.FailSyncEntries(queueIDs, errMsg); err != nil {
+		return fmt.Errorf("record failure: %w", err)
+	}
+	return &SyncError{Operation: "push", Err: fmt.Errorf("%s", errMsg)}
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
 
 // Pull fetches updates from Engram.
@@ -294,18 +441,43 @@ func (s *Syncer) Bootstrap(ctx context.Context) error {
 }
 
 // Flush pushes all pending lore immediately (used on shutdown).
+// Sets the flush:true flag in the request to signal Engram this is a shutdown flush.
 func (s *Syncer) Flush(ctx context.Context) error {
-	unsynced, err := s.store.Unsynced()
+	entries, err := s.store.PendingSyncEntries()
 	if err != nil {
 		return err
 	}
 
-	if len(unsynced) == 0 {
+	// Filter for INSERT entries only (lore)
+	var insertEntries []SyncQueueEntry
+	for _, e := range entries {
+		if e.Operation == "INSERT" {
+			insertEntries = append(insertEntries, e)
+		}
+	}
+
+	if len(insertEntries) == 0 {
 		return nil
 	}
 
-	loreDTOs := make([]engramLoreDTO, len(unsynced))
-	for i, l := range unsynced {
+	// Collect lore IDs
+	loreIDs := make([]string, len(insertEntries))
+	for i, e := range insertEntries {
+		loreIDs[i] = e.LoreID
+	}
+
+	// Fetch lore
+	loreList, err := s.store.GetLoreByIDs(loreIDs)
+	if err != nil {
+		return err
+	}
+
+	if len(loreList) == 0 {
+		return nil
+	}
+
+	loreDTOs := make([]engramLoreDTO, len(loreList))
+	for i, l := range loreList {
 		loreDTOs[i] = engramLoreDTO{
 			ID:         l.ID,
 			Content:    l.Content,
@@ -317,7 +489,7 @@ func (s *Syncer) Flush(ctx context.Context) error {
 	}
 
 	body, err := json.Marshal(engramIngestRequest{
-		SourceID: "",
+		SourceID: s.sourceID,
 		Lore:     loreDTOs,
 		Flush:    true,
 	})
@@ -342,12 +514,17 @@ func (s *Syncer) Flush(ctx context.Context) error {
 		return fmt.Errorf("flush failed: %s", resp.Status)
 	}
 
-	ids := make([]string, len(unsynced))
-	for i, l := range unsynced {
-		ids[i] = l.ID
+	// Clear queue entries and mark synced
+	queueIDs := make([]int64, len(insertEntries))
+	for i, e := range insertEntries {
+		queueIDs[i] = e.ID
+	}
+	syncedLoreIDs := make([]string, len(loreList))
+	for i, l := range loreList {
+		syncedLoreIDs[i] = l.ID
 	}
 
-	return s.store.MarkSynced(ids, time.Now().UTC())
+	return s.store.CompleteSyncEntries(queueIDs, syncedLoreIDs)
 }
 
 func (s *Syncer) setHeaders(req *http.Request) {

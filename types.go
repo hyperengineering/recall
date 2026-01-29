@@ -178,3 +178,19 @@ const (
 	MaxContentLength = 4000
 	MaxContextLength = 1000
 )
+
+// SyncQueueEntry represents a pending sync operation.
+type SyncQueueEntry struct {
+	ID        int64     `json:"id"`
+	LoreID    string    `json:"lore_id"`
+	Operation string    `json:"operation"` // "INSERT" or "FEEDBACK"
+	Payload   string    `json:"payload"`   // JSON payload for FEEDBACK
+	QueuedAt  time.Time `json:"queued_at"`
+	Attempts  int       `json:"attempts"`
+	LastError string    `json:"last_error"`
+}
+
+// FeedbackQueuePayload is the payload stored for FEEDBACK operations.
+type FeedbackQueuePayload struct {
+	Outcome string `json:"outcome"` // helpful | not_relevant | incorrect
+}

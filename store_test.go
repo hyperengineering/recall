@@ -1,6 +1,7 @@
 package recall
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1305,5 +1306,617 @@ func TestStore_ReplaceFromSnapshot_StoreClosed(t *testing.T) {
 	err = store.ReplaceFromSnapshot(snapshotFile)
 	if err != ErrStoreClosed {
 		t.Errorf("ReplaceFromSnapshot on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+// ============================================================================
+// PendingSyncEntries tests
+// ============================================================================
+
+func TestStore_PendingSyncEntries_Empty(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	entries, err := store.PendingSyncEntries()
+	if err != nil {
+		t.Fatalf("PendingSyncEntries failed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected empty slice, got %d entries", len(entries))
+	}
+}
+
+func TestStore_PendingSyncEntries_OrderedByQueuedAt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert entries with specific timestamps (out of order by ID)
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES
+		('lore-3', 'INSERT', '2024-01-03T00:00:00Z'),
+		('lore-1', 'INSERT', '2024-01-01T00:00:00Z'),
+		('lore-2', 'FEEDBACK', '2024-01-02T00:00:00Z')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	entries, err := store.PendingSyncEntries()
+	if err != nil {
+		t.Fatalf("PendingSyncEntries failed: %v", err)
+	}
+
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+
+	// Should be ordered by queued_at ASC
+	expectedOrder := []string{"lore-1", "lore-2", "lore-3"}
+	for i, expected := range expectedOrder {
+		if entries[i].LoreID != expected {
+			t.Errorf("entry[%d].LoreID = %q, want %q", i, entries[i].LoreID, expected)
+		}
+	}
+}
+
+func TestStore_PendingSyncEntries_IncludesPayload(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	payload := `{"outcome":"helpful"}`
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, payload, queued_at)
+		VALUES ('lore-1', 'FEEDBACK', ?, '2024-01-01T00:00:00Z')
+	`, payload)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	entries, err := store.PendingSyncEntries()
+	if err != nil {
+		t.Fatalf("PendingSyncEntries failed: %v", err)
+	}
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	if entries[0].Payload != payload {
+		t.Errorf("Payload = %q, want %q", entries[0].Payload, payload)
+	}
+	if entries[0].Operation != "FEEDBACK" {
+		t.Errorf("Operation = %q, want %q", entries[0].Operation, "FEEDBACK")
+	}
+}
+
+func TestStore_PendingSyncEntries_IncludesAttempts(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at, attempts, last_error)
+		VALUES ('lore-1', 'INSERT', '2024-01-01T00:00:00Z', 3, 'network timeout')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	entries, err := store.PendingSyncEntries()
+	if err != nil {
+		t.Fatalf("PendingSyncEntries failed: %v", err)
+	}
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	if entries[0].Attempts != 3 {
+		t.Errorf("Attempts = %d, want 3", entries[0].Attempts)
+	}
+	if entries[0].LastError != "network timeout" {
+		t.Errorf("LastError = %q, want %q", entries[0].LastError, "network timeout")
+	}
+}
+
+func TestStore_PendingSyncEntries_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	_, err = store.PendingSyncEntries()
+	if err != ErrStoreClosed {
+		t.Errorf("PendingSyncEntries on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+// ============================================================================
+// CompleteSyncEntries tests
+// ============================================================================
+
+func TestStore_CompleteSyncEntries_DeletesQueue(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert sync queue entries
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES
+		('lore-1', 'INSERT', '2024-01-01T00:00:00Z'),
+		('lore-2', 'INSERT', '2024-01-02T00:00:00Z')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	// Get the IDs
+	var id1, id2 int64
+	store.db.QueryRow("SELECT id FROM sync_queue WHERE lore_id = 'lore-1'").Scan(&id1)
+	store.db.QueryRow("SELECT id FROM sync_queue WHERE lore_id = 'lore-2'").Scan(&id2)
+
+	// Complete just the first entry
+	err = store.CompleteSyncEntries([]int64{id1}, nil)
+	if err != nil {
+		t.Fatalf("CompleteSyncEntries failed: %v", err)
+	}
+
+	// Verify first entry is deleted
+	var count int
+	store.db.QueryRow("SELECT COUNT(*) FROM sync_queue WHERE id = ?", id1).Scan(&count)
+	if count != 0 {
+		t.Error("completed entry was not deleted from queue")
+	}
+
+	// Verify second entry remains
+	store.db.QueryRow("SELECT COUNT(*) FROM sync_queue WHERE id = ?", id2).Scan(&count)
+	if count != 1 {
+		t.Error("other entry was incorrectly deleted")
+	}
+}
+
+func TestStore_CompleteSyncEntries_UpdatesSyncedAt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore and queue entries
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Verify synced_at is NULL initially
+	var syncedAt *string
+	store.db.QueryRow("SELECT synced_at FROM lore WHERE id = ?", lore.ID).Scan(&syncedAt)
+	if syncedAt != nil {
+		t.Error("synced_at should be NULL initially")
+	}
+
+	// Get queue entry ID
+	var queueID int64
+	store.db.QueryRow("SELECT id FROM sync_queue WHERE lore_id = ?", lore.ID).Scan(&queueID)
+
+	// Complete the entry
+	err = store.CompleteSyncEntries([]int64{queueID}, []string{lore.ID})
+	if err != nil {
+		t.Fatalf("CompleteSyncEntries failed: %v", err)
+	}
+
+	// Verify synced_at is now set
+	store.db.QueryRow("SELECT synced_at FROM lore WHERE id = ?", lore.ID).Scan(&syncedAt)
+	if syncedAt == nil {
+		t.Error("synced_at should be set after completion")
+	}
+}
+
+func TestStore_CompleteSyncEntries_EmptyInput(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Should not error on empty input
+	err = store.CompleteSyncEntries([]int64{}, nil)
+	if err != nil {
+		t.Errorf("CompleteSyncEntries with empty input failed: %v", err)
+	}
+}
+
+func TestStore_CompleteSyncEntries_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	err = store.CompleteSyncEntries([]int64{1}, []string{"lore-1"})
+	if err != ErrStoreClosed {
+		t.Errorf("CompleteSyncEntries on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+// ============================================================================
+// FailSyncEntries tests
+// ============================================================================
+
+func TestStore_FailSyncEntries_IncrementsAttempts(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert entry with attempts=0
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at, attempts)
+		VALUES ('lore-1', 'INSERT', '2024-01-01T00:00:00Z', 0)
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	var queueID int64
+	store.db.QueryRow("SELECT id FROM sync_queue WHERE lore_id = 'lore-1'").Scan(&queueID)
+
+	// Fail the entry
+	err = store.FailSyncEntries([]int64{queueID}, "connection refused")
+	if err != nil {
+		t.Fatalf("FailSyncEntries failed: %v", err)
+	}
+
+	// Verify attempts incremented
+	var attempts int
+	store.db.QueryRow("SELECT attempts FROM sync_queue WHERE id = ?", queueID).Scan(&attempts)
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1", attempts)
+	}
+
+	// Fail again
+	store.FailSyncEntries([]int64{queueID}, "timeout")
+	store.db.QueryRow("SELECT attempts FROM sync_queue WHERE id = ?", queueID).Scan(&attempts)
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestStore_FailSyncEntries_RecordsError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at)
+		VALUES ('lore-1', 'INSERT', '2024-01-01T00:00:00Z')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	var queueID int64
+	store.db.QueryRow("SELECT id FROM sync_queue WHERE lore_id = 'lore-1'").Scan(&queueID)
+
+	// Fail with error message
+	err = store.FailSyncEntries([]int64{queueID}, "HTTP 503: service unavailable")
+	if err != nil {
+		t.Fatalf("FailSyncEntries failed: %v", err)
+	}
+
+	var lastError string
+	store.db.QueryRow("SELECT last_error FROM sync_queue WHERE id = ?", queueID).Scan(&lastError)
+	if lastError != "HTTP 503: service unavailable" {
+		t.Errorf("last_error = %q, want %q", lastError, "HTTP 503: service unavailable")
+	}
+}
+
+func TestStore_FailSyncEntries_EmptyInput(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	err = store.FailSyncEntries([]int64{}, "some error")
+	if err != nil {
+		t.Errorf("FailSyncEntries with empty input failed: %v", err)
+	}
+}
+
+func TestStore_FailSyncEntries_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	err = store.FailSyncEntries([]int64{1}, "error")
+	if err != ErrStoreClosed {
+		t.Errorf("FailSyncEntries on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+// ============================================================================
+// GetLoreByIDs tests
+// ============================================================================
+
+func TestStore_GetLoreByIDs_Multiple(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert multiple lore entries
+	lore1 := &Lore{ID: "01HQTEST00000000000001", Content: "Content 1", Category: CategoryPatternOutcome, Confidence: 0.5, SourceID: "src"}
+	lore2 := &Lore{ID: "01HQTEST00000000000002", Content: "Content 2", Category: CategoryEdgeCaseDiscovery, Confidence: 0.7, SourceID: "src"}
+	lore3 := &Lore{ID: "01HQTEST00000000000003", Content: "Content 3", Category: CategoryTestingStrategy, Confidence: 0.9, SourceID: "src"}
+
+	store.InsertLore(lore1)
+	store.InsertLore(lore2)
+	store.InsertLore(lore3)
+
+	// Get multiple by IDs
+	results, err := store.GetLoreByIDs([]string{lore1.ID, lore3.ID})
+	if err != nil {
+		t.Fatalf("GetLoreByIDs failed: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	// Build a map for easier checking
+	byID := make(map[string]Lore)
+	for _, l := range results {
+		byID[l.ID] = l
+	}
+
+	if byID[lore1.ID].Content != "Content 1" {
+		t.Errorf("lore1 Content = %q, want %q", byID[lore1.ID].Content, "Content 1")
+	}
+	if byID[lore3.ID].Content != "Content 3" {
+		t.Errorf("lore3 Content = %q, want %q", byID[lore3.ID].Content, "Content 3")
+	}
+}
+
+func TestStore_GetLoreByIDs_PartialMatch(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert only one lore
+	lore := &Lore{ID: "01HQTEST00000000000001", Content: "Content 1", Category: CategoryPatternOutcome, Confidence: 0.5, SourceID: "src"}
+	store.InsertLore(lore)
+
+	// Query with one existing and one non-existing ID
+	results, err := store.GetLoreByIDs([]string{lore.ID, "NONEXISTENT0000000001"})
+	if err != nil {
+		t.Fatalf("GetLoreByIDs failed: %v", err)
+	}
+
+	// Should only return the one that exists
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	if results[0].ID != lore.ID {
+		t.Errorf("result ID = %q, want %q", results[0].ID, lore.ID)
+	}
+}
+
+func TestStore_GetLoreByIDs_Empty(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	results, err := store.GetLoreByIDs([]string{})
+	if err != nil {
+		t.Fatalf("GetLoreByIDs failed: %v", err)
+	}
+
+	if results != nil {
+		t.Errorf("expected nil for empty input, got %v", results)
+	}
+}
+
+func TestStore_GetLoreByIDs_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	_, err = store.GetLoreByIDs([]string{"lore-1"})
+	if err != ErrStoreClosed {
+		t.Errorf("GetLoreByIDs on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+// ============================================================================
+// ApplyFeedback outcome payload test
+// ============================================================================
+
+func TestStore_ApplyFeedback_QueuesWithOutcomePayload(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Clear the INSERT queue entry from InsertLore
+	store.db.Exec("DELETE FROM sync_queue")
+
+	// Apply helpful feedback (isHelpful=true)
+	_, err = store.ApplyFeedback(lore.ID, 0.08, true)
+	if err != nil {
+		t.Fatalf("ApplyFeedback failed: %v", err)
+	}
+
+	// Verify queue entry has outcome payload
+	var payload string
+	err = store.db.QueryRow("SELECT payload FROM sync_queue WHERE lore_id = ? AND operation = 'FEEDBACK'", lore.ID).Scan(&payload)
+	if err != nil {
+		t.Fatalf("failed to get queue entry: %v", err)
+	}
+
+	if payload == "" {
+		t.Fatal("expected payload to be set, got empty string")
+	}
+
+	// Parse payload
+	var feedbackPayload FeedbackQueuePayload
+	if err := json.Unmarshal([]byte(payload), &feedbackPayload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+
+	if feedbackPayload.Outcome != "helpful" {
+		t.Errorf("Outcome = %q, want %q", feedbackPayload.Outcome, "helpful")
+	}
+}
+
+func TestStore_ApplyFeedback_QueuesIncorrectOutcome(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Clear the INSERT queue entry
+	store.db.Exec("DELETE FROM sync_queue")
+
+	// Apply incorrect feedback (delta < 0, isHelpful=false)
+	_, err = store.ApplyFeedback(lore.ID, -0.15, false)
+	if err != nil {
+		t.Fatalf("ApplyFeedback failed: %v", err)
+	}
+
+	// Verify queue entry has incorrect outcome
+	var payload string
+	err = store.db.QueryRow("SELECT payload FROM sync_queue WHERE lore_id = ? AND operation = 'FEEDBACK'", lore.ID).Scan(&payload)
+	if err != nil {
+		t.Fatalf("failed to get queue entry: %v", err)
+	}
+
+	var feedbackPayload FeedbackQueuePayload
+	json.Unmarshal([]byte(payload), &feedbackPayload)
+
+	if feedbackPayload.Outcome != "incorrect" {
+		t.Errorf("Outcome = %q, want %q", feedbackPayload.Outcome, "incorrect")
+	}
+}
+
+func TestStore_ApplyFeedback_QueuesNotRelevantOutcome(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Clear the INSERT queue entry
+	store.db.Exec("DELETE FROM sync_queue")
+
+	// Apply not_relevant feedback (delta = 0, isHelpful=false)
+	_, err = store.ApplyFeedback(lore.ID, 0.0, false)
+	if err != nil {
+		t.Fatalf("ApplyFeedback failed: %v", err)
+	}
+
+	// Verify queue entry has not_relevant outcome
+	var payload string
+	err = store.db.QueryRow("SELECT payload FROM sync_queue WHERE lore_id = ? AND operation = 'FEEDBACK'", lore.ID).Scan(&payload)
+	if err != nil {
+		t.Fatalf("failed to get queue entry: %v", err)
+	}
+
+	var feedbackPayload FeedbackQueuePayload
+	json.Unmarshal([]byte(payload), &feedbackPayload)
+
+	if feedbackPayload.Outcome != "not_relevant" {
+		t.Errorf("Outcome = %q, want %q", feedbackPayload.Outcome, "not_relevant")
 	}
 }
