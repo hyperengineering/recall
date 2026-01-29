@@ -492,53 +492,6 @@ func (s *Store) adjustConfidence(id string, delta float64, incrementValidation b
 	}, nil
 }
 
-// UpdateConfidence adjusts a lore entry's confidence by the given delta.
-// The result is clamped to [0.0, 1.0] range.
-//
-// Returns the updated Lore entry.
-// Returns ErrNotFound if lore with given ID does not exist.
-func (s *Store) UpdateConfidence(loreID string, delta float64) (*Lore, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
-	}
-
-	// Get current lore
-	lore, err := s.getLore(loreID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Calculate new confidence with clamping
-	newConfidence := lore.Confidence + delta
-	if newConfidence < ConfidenceMin {
-		newConfidence = ConfidenceMin
-	}
-	if newConfidence > ConfidenceMax {
-		newConfidence = ConfidenceMax
-	}
-
-	now := time.Now().UTC()
-
-	// Update in database
-	_, err = s.db.Exec(`
-		UPDATE lore
-		SET confidence = ?, updated_at = ?
-		WHERE id = ?
-	`, newConfidence, now.Format(time.RFC3339), loreID)
-	if err != nil {
-		return nil, fmt.Errorf("store: update confidence: %w", err)
-	}
-
-	// Queue for sync
-	_ = s.queueSync(loreID, "FEEDBACK", nil)
-
-	// Return updated lore
-	return s.getLore(loreID)
-}
-
 // Unsynced returns lore entries that haven't been synced yet.
 func (s *Store) Unsynced() ([]Lore, error) {
 	s.mu.RLock()
