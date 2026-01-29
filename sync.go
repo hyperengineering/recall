@@ -235,27 +235,60 @@ func (s *Syncer) Pull(ctx context.Context) error {
 	return nil
 }
 
-// Bootstrap downloads a full snapshot from Engram.
+// Bootstrap downloads a full snapshot from Engram and replaces the local lore.
+//
+// Process:
+//  1. HealthCheck() to validate connectivity and get embedding model
+//  2. Compare embedding model with local metadata
+//  3. If mismatch and not first-time, return ErrModelMismatch
+//  4. Download snapshot and stream to store
+//  5. Store atomically replaces lore table
+//  6. Update metadata (embedding_model, last_sync)
 func (s *Syncer) Bootstrap(ctx context.Context) error {
+	// 1. Health check
+	health, err := s.Health(ctx)
+	if err != nil {
+		return fmt.Errorf("bootstrap: health check: %w", err)
+	}
+
+	// 2. Validate embedding model compatibility
+	// Ignore error: empty result means first-time sync (model check passes)
+	localModel, _ := s.store.GetMetadata("embedding_model")
+	if localModel != "" && localModel != health.EmbeddingModel {
+		return fmt.Errorf("bootstrap: %w: local=%s, remote=%s",
+			ErrModelMismatch, localModel, health.EmbeddingModel)
+	}
+
+	// 3. Download snapshot
 	req, err := http.NewRequestWithContext(ctx, "GET", s.engramURL+"/api/v1/lore/snapshot", nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("bootstrap: create request: %w", err)
 	}
 	s.setHeaders(req)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("bootstrap: download: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("bootstrap failed: %s - %s", resp.Status, string(respBody))
+		return fmt.Errorf("bootstrap: download failed: %s - %s", resp.Status, string(respBody))
 	}
 
-	// TODO: Replace local database with snapshot
-	// This would involve closing the store, replacing the file, and reopening
+	// 4. Replace local store (atomic)
+	if err := s.store.ReplaceFromSnapshot(resp.Body); err != nil {
+		return fmt.Errorf("bootstrap: replace store: %w", err)
+	}
+
+	// 5. Update metadata
+	if err := s.store.SetMetadata("embedding_model", health.EmbeddingModel); err != nil {
+		return fmt.Errorf("bootstrap: set embedding_model: %w", err)
+	}
+	if err := s.store.SetMetadata("last_sync", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("bootstrap: set last_sync: %w", err)
+	}
 
 	return nil
 }

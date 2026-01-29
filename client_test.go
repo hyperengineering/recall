@@ -1427,3 +1427,29 @@ func TestFeedback_SyncQueuePersistsAcrossRestart(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Story 4.2: Bootstrap Sync - Acceptance Tests
+// =============================================================================
+
+// TestClient_Bootstrap_OfflineMode tests AC #7:
+// Given no Engram URL is configured (offline-only mode)
+// When the developer calls client.Bootstrap()
+// Then ErrOffline is returned
+func TestClient_Bootstrap_OfflineMode(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Create client without Engram URL (offline mode)
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer client.Close()
+
+	// Bootstrap should return ErrOffline
+	err = client.Bootstrap(context.Background())
+	if !errors.Is(err, recall.ErrOffline) {
+		t.Errorf("Bootstrap() error = %v, want ErrOffline", err)
+	}
+}
+

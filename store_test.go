@@ -982,3 +982,328 @@ func TestStore_ApplyFeedback_RollbackOnQueueFailure(t *testing.T) {
 			currentValidationCount, afterLore.ValidationCount)
 	}
 }
+
+// ============================================================================
+// Metadata tests
+// ============================================================================
+
+func TestStore_GetMetadata_Exists(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert a metadata entry directly
+	_, err = store.db.Exec("INSERT INTO metadata (key, value) VALUES ('test_key', 'test_value')")
+	if err != nil {
+		t.Fatalf("failed to insert metadata: %v", err)
+	}
+
+	value, err := store.GetMetadata("test_key")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if value != "test_value" {
+		t.Errorf("GetMetadata = %q, want %q", value, "test_value")
+	}
+}
+
+func TestStore_GetMetadata_NotExists(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	value, err := store.GetMetadata("nonexistent_key")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if value != "" {
+		t.Errorf("GetMetadata = %q, want empty string", value)
+	}
+}
+
+func TestStore_SetMetadata_Insert(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	err = store.SetMetadata("new_key", "new_value")
+	if err != nil {
+		t.Fatalf("SetMetadata failed: %v", err)
+	}
+
+	// Verify using GetMetadata
+	value, err := store.GetMetadata("new_key")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if value != "new_value" {
+		t.Errorf("GetMetadata = %q, want %q", value, "new_value")
+	}
+}
+
+func TestStore_SetMetadata_Update(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Set initial value
+	err = store.SetMetadata("update_key", "initial_value")
+	if err != nil {
+		t.Fatalf("SetMetadata (initial) failed: %v", err)
+	}
+
+	// Update value
+	err = store.SetMetadata("update_key", "updated_value")
+	if err != nil {
+		t.Fatalf("SetMetadata (update) failed: %v", err)
+	}
+
+	// Verify update
+	value, err := store.GetMetadata("update_key")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if value != "updated_value" {
+		t.Errorf("GetMetadata = %q, want %q", value, "updated_value")
+	}
+}
+
+func TestStore_GetMetadata_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	_, err = store.GetMetadata("any_key")
+	if err != ErrStoreClosed {
+		t.Errorf("GetMetadata on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+func TestStore_SetMetadata_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	err = store.SetMetadata("any_key", "any_value")
+	if err != ErrStoreClosed {
+		t.Errorf("SetMetadata on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+// ============================================================================
+// ReplaceFromSnapshot tests
+// ============================================================================
+
+func TestStore_ReplaceFromSnapshot_Success(t *testing.T) {
+	// Create main store with some existing data
+	mainPath := filepath.Join(t.TempDir(), "main.db")
+	mainStore, err := NewStore(mainPath)
+	if err != nil {
+		t.Fatalf("NewStore (main) failed: %v", err)
+	}
+	defer mainStore.Close()
+
+	// Insert existing lore that should be replaced
+	existingLore := &Lore{
+		ID:         "EXISTING000000000000001",
+		Content:    "Existing content to be replaced",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "existing-source",
+	}
+	if err := mainStore.InsertLore(existingLore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Create snapshot store with different data
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.db")
+	snapshotStore, err := NewStore(snapshotPath)
+	if err != nil {
+		t.Fatalf("NewStore (snapshot) failed: %v", err)
+	}
+
+	// Insert snapshot lore
+	snapshotLore := &Lore{
+		ID:         "SNAPSHOT000000000000001",
+		Content:    "Snapshot content",
+		Category:   CategoryEdgeCaseDiscovery,
+		Confidence: 0.9,
+		SourceID:   "snapshot-source",
+	}
+	if err := snapshotStore.InsertLore(snapshotLore); err != nil {
+		t.Fatalf("InsertLore (snapshot) failed: %v", err)
+	}
+	snapshotStore.Close()
+
+	// Read snapshot file
+	snapshotFile, err := os.Open(snapshotPath)
+	if err != nil {
+		t.Fatalf("failed to open snapshot: %v", err)
+	}
+	defer snapshotFile.Close()
+
+	// Replace from snapshot
+	err = mainStore.ReplaceFromSnapshot(snapshotFile)
+	if err != nil {
+		t.Fatalf("ReplaceFromSnapshot failed: %v", err)
+	}
+
+	// Verify existing lore is gone
+	_, err = mainStore.Get("EXISTING000000000000001")
+	if err != ErrNotFound {
+		t.Errorf("expected existing lore to be deleted, got err: %v", err)
+	}
+
+	// Verify snapshot lore is present
+	newLore, err := mainStore.Get("SNAPSHOT000000000000001")
+	if err != nil {
+		t.Fatalf("failed to get snapshot lore: %v", err)
+	}
+	if newLore.Content != "Snapshot content" {
+		t.Errorf("Content = %q, want %q", newLore.Content, "Snapshot content")
+	}
+
+	// Verify sync queue is cleared
+	var queueCount int
+	mainStore.db.QueryRow("SELECT COUNT(*) FROM sync_queue").Scan(&queueCount)
+	if queueCount != 0 {
+		t.Errorf("sync_queue count = %d, want 0", queueCount)
+	}
+}
+
+func TestStore_ReplaceFromSnapshot_EmptySnapshot(t *testing.T) {
+	// Create main store with existing data
+	mainPath := filepath.Join(t.TempDir(), "main.db")
+	mainStore, err := NewStore(mainPath)
+	if err != nil {
+		t.Fatalf("NewStore (main) failed: %v", err)
+	}
+	defer mainStore.Close()
+
+	// Insert existing lore
+	existingLore := &Lore{
+		ID:         "TODELETE000000000000001",
+		Content:    "Content to delete",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "existing-source",
+	}
+	if err := mainStore.InsertLore(existingLore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Create empty snapshot store (no lore)
+	snapshotPath := filepath.Join(t.TempDir(), "empty-snapshot.db")
+	snapshotStore, err := NewStore(snapshotPath)
+	if err != nil {
+		t.Fatalf("NewStore (snapshot) failed: %v", err)
+	}
+	snapshotStore.Close()
+
+	// Read snapshot file
+	snapshotFile, err := os.Open(snapshotPath)
+	if err != nil {
+		t.Fatalf("failed to open snapshot: %v", err)
+	}
+	defer snapshotFile.Close()
+
+	// Replace from snapshot
+	err = mainStore.ReplaceFromSnapshot(snapshotFile)
+	if err != nil {
+		t.Fatalf("ReplaceFromSnapshot failed: %v", err)
+	}
+
+	// Verify all lore is deleted
+	var loreCount int
+	mainStore.db.QueryRow("SELECT COUNT(*) FROM lore").Scan(&loreCount)
+	if loreCount != 0 {
+		t.Errorf("lore count = %d, want 0", loreCount)
+	}
+}
+
+func TestStore_ReplaceFromSnapshot_InvalidDB(t *testing.T) {
+	// Create main store with existing data
+	mainPath := filepath.Join(t.TempDir(), "main.db")
+	mainStore, err := NewStore(mainPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer mainStore.Close()
+
+	// Insert existing lore
+	existingLore := &Lore{
+		ID:         "PRESERVE000000000000001",
+		Content:    "Content that should be preserved",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "existing-source",
+	}
+	if err := mainStore.InsertLore(existingLore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Create invalid "snapshot" (just text, not a SQLite file)
+	invalidPath := filepath.Join(t.TempDir(), "invalid.db")
+	os.WriteFile(invalidPath, []byte("this is not a sqlite database"), 0644)
+
+	invalidFile, err := os.Open(invalidPath)
+	if err != nil {
+		t.Fatalf("failed to open invalid file: %v", err)
+	}
+	defer invalidFile.Close()
+
+	// Replace from invalid snapshot should fail
+	err = mainStore.ReplaceFromSnapshot(invalidFile)
+	if err == nil {
+		t.Fatal("expected error for invalid snapshot, got nil")
+	}
+
+	// Verify existing data is preserved
+	preservedLore, err := mainStore.Get("PRESERVE000000000000001")
+	if err != nil {
+		t.Fatalf("existing lore was not preserved: %v", err)
+	}
+	if preservedLore.Content != "Content that should be preserved" {
+		t.Error("existing lore content was modified")
+	}
+}
+
+func TestStore_ReplaceFromSnapshot_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	// Create a valid snapshot to pass
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.db")
+	snapshotStore, _ := NewStore(snapshotPath)
+	snapshotStore.Close()
+
+	snapshotFile, _ := os.Open(snapshotPath)
+	defer snapshotFile.Close()
+
+	err = store.ReplaceFromSnapshot(snapshotFile)
+	if err != ErrStoreClosed {
+		t.Errorf("ReplaceFromSnapshot on closed store = %v, want ErrStoreClosed", err)
+	}
+}

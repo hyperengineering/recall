@@ -367,6 +367,27 @@ func (c *Client) SyncPull(ctx context.Context) error {
 	return c.syncer.Pull(ctx)
 }
 
+// Bootstrap downloads a full snapshot from Engram and replaces the local lore.
+//
+// This is used to initialize or refresh the local database with the complete
+// knowledge base from Engram, including embeddings for similarity queries.
+//
+// The bootstrap process:
+//  1. Validates connectivity via health check
+//  2. Checks embedding model compatibility (aborts if models mismatch)
+//  3. Downloads the full snapshot
+//  4. Atomically replaces local lore (preserves data on failure)
+//  5. Updates metadata (embedding_model, last_sync)
+//
+// Returns ErrOffline if Engram is not configured.
+// Returns ErrModelMismatch if local embedding model differs from remote.
+func (c *Client) Bootstrap(ctx context.Context) error {
+	if c.syncer == nil {
+		return ErrOffline
+	}
+	return c.syncer.Bootstrap(ctx)
+}
+
 // Stats returns store statistics.
 func (c *Client) Stats() (*StoreStats, error) {
 	return c.store.Stats()

@@ -3,6 +3,7 @@ package recall
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -611,6 +612,181 @@ func (s *Store) Stats() (*StoreStats, error) {
 	}, nil
 }
 
+// GetMetadata retrieves a metadata value by key.
+// Returns empty string if key not found.
+func (s *Store) GetMetadata(key string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return "", ErrStoreClosed
+	}
+
+	var value sql.NullString
+	err := s.db.QueryRow("SELECT value FROM metadata WHERE key = ?", key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return value.String, nil
+}
+
+// SetMetadata sets a metadata key-value pair (upsert).
+func (s *Store) SetMetadata(key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO metadata (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, key, value)
+	return err
+}
+
+// ReplaceFromSnapshot atomically replaces all lore with data from a snapshot.
+//
+// The snapshot is expected to be a SQLite database file streamed as io.Reader.
+// This method:
+//  1. Writes snapshot to a temp file
+//  2. Opens temp database and reads all lore
+//  3. In a single transaction: DELETE all lore, INSERT all from snapshot
+//  4. Cleans up temp file
+//
+// If any step fails, the local lore data is preserved.
+func (s *Store) ReplaceFromSnapshot(r io.Reader) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	// 1. Write to temp file
+	tmpFile, err := os.CreateTemp("", "recall-snapshot-*.db")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmpFile, r); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("write snapshot: %w", err)
+	}
+	tmpFile.Close()
+
+	// 2. Open snapshot database
+	snapshotDB, err := sql.Open("sqlite", tmpPath)
+	if err != nil {
+		return fmt.Errorf("open snapshot: %w", err)
+	}
+	defer snapshotDB.Close()
+
+	// 3. Read all lore from snapshot
+	rows, err := snapshotDB.Query(`
+		SELECT id, content, context, category, confidence, embedding,
+		       source_id, sources, validation_count, last_validated,
+		       created_at, updated_at, synced_at
+		FROM lore
+	`)
+	if err != nil {
+		return fmt.Errorf("read snapshot: %w", err)
+	}
+	defer rows.Close()
+
+	var loreEntries []Lore
+	for rows.Next() {
+		lore, err := s.scanLoreRows(rows)
+		if err != nil {
+			return fmt.Errorf("scan snapshot row: %w", err)
+		}
+		loreEntries = append(loreEntries, *lore)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate snapshot: %w", err)
+	}
+
+	// 4. Atomic replacement in local database
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Delete all existing lore
+	if _, err := tx.Exec("DELETE FROM lore"); err != nil {
+		return fmt.Errorf("delete existing lore: %w", err)
+	}
+
+	// Clear sync queue (bootstrap replaces everything)
+	if _, err := tx.Exec("DELETE FROM sync_queue"); err != nil {
+		return fmt.Errorf("clear sync queue: %w", err)
+	}
+
+	// Insert all snapshot lore
+	for _, lore := range loreEntries {
+		if err := s.insertLoreTx(tx, &lore); err != nil {
+			return fmt.Errorf("insert lore %s: %w", lore.ID, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// insertLoreTx inserts a lore entry within a transaction (no sync queue).
+func (s *Store) insertLoreTx(tx *sql.Tx, lore *Lore) error {
+	var embeddingBlob []byte
+	if len(lore.Embedding) > 0 {
+		embeddingBlob = lore.Embedding
+	}
+
+	var sourcesStr *string
+	if len(lore.Sources) > 0 {
+		joined := strings.Join(lore.Sources, ",")
+		sourcesStr = &joined
+	}
+
+	var lastValidatedStr *string
+	if lore.LastValidated != nil {
+		ts := lore.LastValidated.Format(time.RFC3339)
+		lastValidatedStr = &ts
+	}
+
+	var syncedAtStr *string
+	if lore.SyncedAt != nil {
+		ts := lore.SyncedAt.Format(time.RFC3339)
+		syncedAtStr = &ts
+	}
+
+	_, err := tx.Exec(`
+		INSERT INTO lore (id, content, context, category, confidence, embedding,
+		                 source_id, sources, validation_count, last_validated,
+		                 created_at, updated_at, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		lore.ID,
+		lore.Content,
+		nullString(lore.Context),
+		string(lore.Category),
+		lore.Confidence,
+		embeddingBlob,
+		lore.SourceID,
+		sourcesStr,
+		lore.ValidationCount,
+		lastValidatedStr,
+		lore.CreatedAt.Format(time.RFC3339),
+		lore.UpdatedAt.Format(time.RFC3339),
+		syncedAtStr,
+	)
+	return err
+}
+
 // Close closes the store.
 func (s *Store) Close() error {
 	s.mu.Lock()
@@ -706,6 +882,41 @@ func (s *Store) scanLore(row *sql.Row) (*Lore, error) {
 // scanLoreRows scans a single row from Query iteration.
 func (s *Store) scanLoreRows(rows *sql.Rows) (*Lore, error) {
 	return s.scanLoreFrom(rows)
+}
+
+// PendingFeedback returns feedback entries pending sync.
+// This is a stub for Story 4.3 (Push sync).
+func (s *Store) PendingFeedback() ([]FeedbackEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	// TODO: Implement in Story 4.3
+	return nil, nil
+}
+
+// MarkFeedbackSynced marks feedback entries as synced.
+// This is a stub for Story 4.3 (Push sync).
+func (s *Store) MarkFeedbackSynced(ids []int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	// TODO: Implement in Story 4.3
+	return nil
+}
+
+// FeedbackEntry represents a pending feedback item in the sync queue.
+type FeedbackEntry struct {
+	ID      int64
+	LoreID  string
+	Outcome string
 }
 
 func nullString(s string) *string {
