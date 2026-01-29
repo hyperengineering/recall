@@ -1,6 +1,10 @@
 package main
 
 import (
+	"fmt"
+	"sort"
+
+	"github.com/hyperengineering/recall"
 	"github.com/spf13/cobra"
 )
 
@@ -11,25 +15,34 @@ var sessionCmd = &cobra.Command{
 
 Each entry shows its session reference (L1, L2, ...) for use with the feedback command.
 
-Note: Session tracking is per-process. In CLI mode, each command invocation
-is a separate session. This command is more useful in interactive/REPL modes.`,
+Note: In CLI mode, each command invocation is a separate session.
+Use 'query' first to surface lore, then use 'feedback' within the same
+process or reference lore by ID.
+
+Example:
+  recall session
+  recall session --json`,
 	RunE: runSession,
 }
 
 func runSession(cmd *cobra.Command, args []string) error {
-	if _, err := loadAndValidateConfig(); err != nil {
+	cfg, err := loadAndValidateConfig()
+	if err != nil {
 		return err
 	}
 
-	// For CLI, session is ephemeral per invocation
-	// The session command makes more sense in interactive mode
-	// For now, explain the limitation
-
-	if outputJSON {
-		return outputAsJSON(cmd, []interface{}{})
+	client, err := recall.New(cfg)
+	if err != nil {
+		return fmt.Errorf("initialize client: %w", err)
 	}
+	defer client.Close()
 
-	outputText(cmd, "No lore surfaced in current session.\n")
-	outputText(cmd, "(CLI commands run in separate sessions — use 'query' first, then 'feedback')\n")
-	return nil
+	sessionLore := client.GetSessionLore()
+
+	// Sort by session ref (L1, L2, L3...)
+	sort.Slice(sessionLore, func(i, j int) bool {
+		return sessionLore[i].SessionRef < sessionLore[j].SessionRef
+	})
+
+	return outputSessionLore(cmd, sessionLore)
 }

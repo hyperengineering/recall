@@ -14,27 +14,57 @@ var syncCmd = &cobra.Command{
 	Short: "Synchronize with Engram",
 	Long: `Synchronize local lore with the Engram central service.
 
+Subcommands:
+  push      Push local changes to Engram
+  bootstrap Download full snapshot from Engram
+
 Example:
-  recall sync           # Full sync (push + pull)
-  recall sync --push    # Push local changes only
-  recall sync --pull    # Pull remote changes only`,
-	RunE: runSync,
+  recall sync push
+  recall sync bootstrap`,
 }
 
-var (
-	syncPush bool
-	syncPull bool
-)
+var syncPushCmd = &cobra.Command{
+	Use:   "push",
+	Short: "Push local changes to Engram",
+	Long: `Push pending local lore and feedback to the Engram central service.
+
+Example:
+  recall sync push
+  recall sync push --json`,
+	RunE: runSyncPush,
+}
+
+var syncBootstrapCmd = &cobra.Command{
+	Use:   "bootstrap",
+	Short: "Download full snapshot from Engram",
+	Long: `Download a complete lore snapshot from Engram, replacing local data.
+
+This is used to:
+  - Initialize a new client with the full knowledge base
+  - Refresh local data with complete server state
+  - Obtain embeddings for semantic similarity queries
+
+Warning: This replaces ALL local lore with the server snapshot.
+
+Example:
+  recall sync bootstrap
+  recall sync bootstrap --json`,
+	RunE: runSyncBootstrap,
+}
 
 func init() {
-	syncCmd.Flags().BoolVar(&syncPush, "push", false, "Push local changes only")
-	syncCmd.Flags().BoolVar(&syncPull, "pull", false, "Pull remote changes only")
+	syncCmd.AddCommand(syncPushCmd)
+	syncCmd.AddCommand(syncBootstrapCmd)
 }
 
-func runSync(cmd *cobra.Command, args []string) error {
-	cfg := loadConfig()
-	if cfg.EngramURL == "" {
-		return fmt.Errorf("ENGRAM_URL not configured")
+func runSyncPush(cmd *cobra.Command, args []string) error {
+	cfg, err := loadAndValidateConfig()
+	if err != nil {
+		return err
+	}
+
+	if cfg.IsOffline() {
+		return fmt.Errorf("sync unavailable: ENGRAM_URL not configured (offline-only mode)")
 	}
 
 	client, err := recall.New(cfg)
@@ -46,40 +76,45 @@ func runSync(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	statsBefore, _ := client.Stats()
+
 	start := time.Now()
+	if err := client.SyncPush(ctx); err != nil {
+		return fmt.Errorf("push: %w", err)
+	}
+	duration := time.Since(start)
 
-	if syncPush && !syncPull {
-		fmt.Println("Pushing local changes...")
-		if err := client.SyncPush(ctx); err != nil {
-			return fmt.Errorf("push: %w", err)
-		}
-		fmt.Printf("Push complete (took %s)\n", time.Since(start).Round(time.Millisecond))
-		return nil
+	statsAfter, _ := client.Stats()
+
+	return outputSyncPush(cmd, statsBefore, statsAfter, duration)
+}
+
+func runSyncBootstrap(cmd *cobra.Command, args []string) error {
+	cfg, err := loadAndValidateConfig()
+	if err != nil {
+		return err
 	}
 
-	if syncPull && !syncPush {
-		fmt.Println("Pulling remote changes...")
-		if err := client.SyncPull(ctx); err != nil {
-			return fmt.Errorf("pull: %w", err)
-		}
-		fmt.Printf("Pull complete (took %s)\n", time.Since(start).Round(time.Millisecond))
-		return nil
+	if cfg.IsOffline() {
+		return fmt.Errorf("bootstrap unavailable: ENGRAM_URL not configured (offline-only mode)")
 	}
 
-	// Full sync
-	fmt.Println("Synchronizing with Engram...")
-	if err := client.Sync(ctx); err != nil {
-		return fmt.Errorf("sync: %w", err)
+	client, err := recall.New(cfg)
+	if err != nil {
+		return fmt.Errorf("initialize client: %w", err)
 	}
+	defer client.Close()
 
-	fmt.Printf("Sync complete (took %s)\n", time.Since(start).Round(time.Millisecond))
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
 
-	// Show stats
-	stats, err := client.Stats()
-	if err == nil {
-		fmt.Printf("Local lore count: %d\n", stats.LoreCount)
-		fmt.Printf("Pending sync: %d\n", stats.PendingSync)
+	start := time.Now()
+	if err := client.Bootstrap(ctx); err != nil {
+		return fmt.Errorf("bootstrap: %w", err)
 	}
+	duration := time.Since(start)
 
-	return nil
+	stats, _ := client.Stats()
+
+	return outputSyncBootstrap(cmd, stats, duration)
 }

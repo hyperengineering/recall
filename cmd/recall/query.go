@@ -10,32 +10,37 @@ import (
 )
 
 var queryCmd = &cobra.Command{
-	Use:   "query [search terms]",
+	Use:   "query <search terms>",
 	Short: "Query for relevant lore",
 	Long: `Search for lore semantically similar to the query.
 
 Example:
   recall query "implementing message consumers"
-  recall query "database performance" -k 10 --min-confidence 0.7
-  recall query "testing strategies" --categories TESTING_STRATEGY,PATTERN_OUTCOME`,
+  recall query "database performance" --top 10 --min-confidence 0.7
+  recall query "testing strategies" --category TESTING_STRATEGY,PATTERN_OUTCOME --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runQuery,
 }
 
 var (
-	queryK             int
+	queryTop           int
 	queryMinConfidence float64
-	queryCategories    string
+	queryCategory      string
 )
 
 func init() {
-	queryCmd.Flags().IntVarP(&queryK, "limit", "k", 5, "Maximum number of results")
-	queryCmd.Flags().Float64Var(&queryMinConfidence, "min-confidence", 0.5, "Minimum confidence threshold")
-	queryCmd.Flags().StringVar(&queryCategories, "categories", "", "Comma-separated list of categories to filter")
+	queryCmd.Flags().IntVarP(&queryTop, "top", "k", 5, "Maximum number of results")
+	queryCmd.Flags().Float64Var(&queryMinConfidence, "min-confidence", 0.0, "Minimum confidence threshold")
+	queryCmd.Flags().StringVar(&queryCategory, "category", "", "Comma-separated categories to filter")
 }
 
 func runQuery(cmd *cobra.Command, args []string) error {
-	client, err := recall.New(loadConfig())
+	cfg, err := loadAndValidateConfig()
+	if err != nil {
+		return err
+	}
+
+	client, err := recall.New(cfg)
 	if err != nil {
 		return fmt.Errorf("initialize client: %w", err)
 	}
@@ -43,14 +48,15 @@ func runQuery(cmd *cobra.Command, args []string) error {
 
 	params := recall.QueryParams{
 		Query: args[0],
-		K:     queryK,
+		K:     queryTop,
 	}
-	if queryMinConfidence > 0 {
+
+	if cmd.Flags().Changed("min-confidence") {
 		params.MinConfidence = &queryMinConfidence
 	}
 
-	if queryCategories != "" {
-		cats := strings.Split(queryCategories, ",")
+	if queryCategory != "" {
+		cats := strings.Split(queryCategory, ",")
 		for _, c := range cats {
 			params.Categories = append(params.Categories, recall.Category(strings.TrimSpace(c)))
 		}
@@ -61,32 +67,5 @@ func runQuery(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("query lore: %w", err)
 	}
 
-	if len(result.Lore) == 0 {
-		fmt.Println("No matching lore found.")
-		return nil
-	}
-
-	fmt.Printf("Found %d matching entries:\n\n", len(result.Lore))
-
-	for i, lore := range result.Lore {
-		ref := ""
-		for r, id := range result.SessionRefs {
-			if id == lore.ID {
-				ref = r
-				break
-			}
-		}
-
-		fmt.Printf("[%s] %s (confidence: %.2f, validated: %d times)\n",
-			ref, lore.Category, lore.Confidence, lore.ValidationCount)
-		fmt.Printf("    %s\n", lore.Content)
-		if lore.Context != "" {
-			fmt.Printf("    Context: %s\n", lore.Context)
-		}
-		if i < len(result.Lore)-1 {
-			fmt.Println()
-		}
-	}
-
-	return nil
+	return outputQueryResult(cmd, result)
 }

@@ -465,3 +465,354 @@ func TestCLI_Record_UnicodeContent(t *testing.T) {
 		t.Fatalf("unicode content should be valid, got error: %v", err)
 	}
 }
+
+// ============================================================================
+// Story 5.2 Tests: Query, Feedback, Sync, Session
+// ============================================================================
+
+func resetQueryFlags() {
+	queryTop = 5
+	queryMinConfidence = 0.0
+	queryCategory = ""
+}
+
+func resetFeedbackFlags() {
+	feedbackID = ""
+	feedbackType = ""
+	feedbackHelpful = ""
+	feedbackNotRelevant = ""
+	feedbackIncorrect = ""
+}
+
+func TestCLI_Query_NoResults(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+	resetQueryFlags()
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"query", "nonexistent search term xyz"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("query with no results should not error: %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "No matching lore found") {
+		t.Errorf("output should indicate no results, got: %s", output)
+	}
+}
+
+func TestCLI_Query_TopFlag(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+	resetQueryFlags()
+
+	// The query should work even with --top flag (even if no results)
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"query", "test", "--top", "3"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("query with --top should work: %v", err)
+	}
+}
+
+func TestCLI_Query_ShortFlag(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+	resetQueryFlags()
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"query", "test", "-k", "10"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("query with -k should work: %v", err)
+	}
+}
+
+func TestCLI_Query_CategoryFlag(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+	resetQueryFlags()
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"query", "test", "--category", "PATTERN_OUTCOME"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("query with --category should work: %v", err)
+	}
+}
+
+func TestCLI_Query_JSON(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+	resetQueryFlags()
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"query", "test", "--json"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("query with --json should work: %v", err)
+	}
+
+	output := stdout.String()
+
+	// Verify it's valid JSON with expected structure
+	var result recall.QueryResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Errorf("output should be valid QueryResult JSON: %v", err)
+	}
+
+	// Check for snake_case fields
+	if !strings.Contains(output, `"lore"`) {
+		t.Error("JSON should have 'lore' field")
+	}
+	if !strings.Contains(output, `"session_refs"`) {
+		t.Error("JSON should have 'session_refs' field (snake_case)")
+	}
+}
+
+func TestCLI_Feedback_InvalidType(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+	resetFeedbackFlags()
+
+	rootCmd.SetArgs([]string{"feedback", "--id", "L1", "--type", "wrong"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("feedback with invalid type should error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "invalid feedback type") {
+		t.Errorf("error should mention invalid type, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "helpful") {
+		t.Errorf("error should list valid types, got: %s", errMsg)
+	}
+}
+
+func TestCLI_Feedback_MissingID(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+	resetFeedbackFlags()
+
+	rootCmd.SetArgs([]string{"feedback", "--type", "helpful"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("feedback without --id should error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "--id") {
+		t.Errorf("error should mention --id required, got: %s", errMsg)
+	}
+}
+
+func TestCLI_Feedback_MissingType(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+	resetFeedbackFlags()
+
+	rootCmd.SetArgs([]string{"feedback", "--id", "L1"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("feedback without --type should error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "--type") {
+		t.Errorf("error should mention --type required, got: %s", errMsg)
+	}
+}
+
+func TestCLI_Feedback_NoFlags(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+	resetFeedbackFlags()
+
+	rootCmd.SetArgs([]string{"feedback"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("feedback with no flags should error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "provide") {
+		t.Errorf("error should ask to provide flags, got: %s", errMsg)
+	}
+}
+
+func TestCLI_Feedback_MixedModes(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+	resetFeedbackFlags()
+
+	rootCmd.SetArgs([]string{"feedback", "--id", "L1", "--type", "helpful", "--helpful", "L2"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("mixing single and batch modes should error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "cannot mix") {
+		t.Errorf("error should mention cannot mix modes, got: %s", errMsg)
+	}
+}
+
+func TestCLI_Feedback_TypeVariants(t *testing.T) {
+	// Test that different variants of not_relevant are accepted
+	tests := []struct {
+		input    string
+		expected recall.FeedbackType
+	}{
+		{"helpful", recall.Helpful},
+		{"HELPFUL", recall.Helpful},
+		{"Helpful", recall.Helpful},
+		{"incorrect", recall.Incorrect},
+		{"INCORRECT", recall.Incorrect},
+		{"not_relevant", recall.NotRelevant},
+		{"not-relevant", recall.NotRelevant},
+		{"notrelevant", recall.NotRelevant},
+	}
+
+	for _, tc := range tests {
+		ft, err := parseFeedbackType(tc.input)
+		if err != nil {
+			t.Errorf("parseFeedbackType(%q) should not error: %v", tc.input, err)
+			continue
+		}
+		if ft != tc.expected {
+			t.Errorf("parseFeedbackType(%q) = %v, want %v", tc.input, ft, tc.expected)
+		}
+	}
+}
+
+func TestCLI_Sync_Help(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"sync", "--help"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("sync --help should work: %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "push") {
+		t.Error("sync help should list push subcommand")
+	}
+	if !strings.Contains(output, "bootstrap") {
+		t.Error("sync help should list bootstrap subcommand")
+	}
+}
+
+func TestCLI_SyncPush_Offline(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+
+	// Ensure ENGRAM_URL is empty (offline mode)
+	os.Setenv("ENGRAM_URL", "")
+
+	rootCmd.SetArgs([]string{"sync", "push"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("sync push in offline mode should error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "offline") {
+		t.Errorf("error should mention offline mode, got: %s", errMsg)
+	}
+}
+
+func TestCLI_SyncBootstrap_Offline(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+
+	// Ensure ENGRAM_URL is empty (offline mode)
+	os.Setenv("ENGRAM_URL", "")
+
+	rootCmd.SetArgs([]string{"sync", "bootstrap"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("sync bootstrap in offline mode should error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "offline") {
+		t.Errorf("error should mention offline mode, got: %s", errMsg)
+	}
+}
+
+func TestCLI_Session_JSON(t *testing.T) {
+	cleanup := testEnv(t)
+	defer cleanup()
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"session", "--json"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("session --json should work: %v", err)
+	}
+
+	output := strings.TrimSpace(stdout.String())
+
+	// Should be valid JSON array
+	var result []recall.SessionLore
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Errorf("output should be valid JSON array: %v", err)
+	}
+}
+
+func TestCLI_Query_MissingConfig(t *testing.T) {
+	// Test without RECALL_DB_PATH
+	origDBPath := os.Getenv("RECALL_DB_PATH")
+	origEngramURL := os.Getenv("ENGRAM_URL")
+	os.Setenv("RECALL_DB_PATH", "")
+	os.Setenv("ENGRAM_URL", "")
+
+	cfgLorePath = ""
+	cfgEngramURL = ""
+	resetQueryFlags()
+
+	defer func() {
+		os.Setenv("RECALL_DB_PATH", origDBPath)
+		os.Setenv("ENGRAM_URL", origEngramURL)
+		cfgLorePath = ""
+		cfgEngramURL = ""
+	}()
+
+	rootCmd.SetArgs([]string{"query", "test"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("query without config should error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "LocalPath") || !strings.Contains(errMsg, "RECALL_DB_PATH") {
+		t.Errorf("error should mention missing config, got: %s", errMsg)
+	}
+}

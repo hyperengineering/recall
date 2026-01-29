@@ -12,42 +12,99 @@ import (
 var feedbackCmd = &cobra.Command{
 	Use:   "feedback",
 	Short: "Provide feedback on recalled lore",
-	Long: `Provide feedback on lore that was surfaced during a session.
+	Long: `Provide feedback on lore to adjust confidence scores.
 
-This command updates confidence scores based on your feedback:
-  - helpful: +0.08 confidence
-  - incorrect: -0.15 confidence
-  - not-relevant: no change (context mismatch, not lore quality)
+Confidence adjustments:
+  - helpful:      +0.08 confidence
+  - incorrect:    -0.15 confidence
+  - not_relevant:  no change
 
-Example:
+Single-item mode:
+  recall feedback --id <lore-id> --type helpful
+  recall feedback --id L1 --type incorrect
+
+Batch mode:
   recall feedback --helpful L1,L2 --incorrect L3
   recall feedback --helpful "queue consumer idempotency"`,
 	RunE: runFeedback,
 }
 
 var (
+	// Single-item mode
+	feedbackID   string
+	feedbackType string
+
+	// Batch mode
 	feedbackHelpful     string
 	feedbackNotRelevant string
 	feedbackIncorrect   string
 )
 
+var validFeedbackTypes = []string{"helpful", "incorrect", "not_relevant"}
+
 func init() {
-	feedbackCmd.Flags().StringVar(&feedbackHelpful, "helpful", "", "Comma-separated list of helpful lore refs")
-	feedbackCmd.Flags().StringVar(&feedbackNotRelevant, "not-relevant", "", "Comma-separated list of not-relevant lore refs")
-	feedbackCmd.Flags().StringVar(&feedbackIncorrect, "incorrect", "", "Comma-separated list of incorrect lore refs")
+	// Single-item flags
+	feedbackCmd.Flags().StringVar(&feedbackID, "id", "", "Lore ID or session ref (L1, L2, ...)")
+	feedbackCmd.Flags().StringVar(&feedbackType, "type", "", "Feedback type: helpful, incorrect, not_relevant")
+
+	// Batch flags
+	feedbackCmd.Flags().StringVar(&feedbackHelpful, "helpful", "", "Comma-separated helpful refs")
+	feedbackCmd.Flags().StringVar(&feedbackNotRelevant, "not-relevant", "", "Comma-separated not-relevant refs")
+	feedbackCmd.Flags().StringVar(&feedbackIncorrect, "incorrect", "", "Comma-separated incorrect refs")
 }
 
 func runFeedback(cmd *cobra.Command, args []string) error {
-	if feedbackHelpful == "" && feedbackNotRelevant == "" && feedbackIncorrect == "" {
-		return fmt.Errorf("at least one feedback flag is required")
+	cfg, err := loadAndValidateConfig()
+	if err != nil {
+		return err
 	}
 
-	client, err := recall.New(loadConfig())
+	// Determine mode: single-item vs batch
+	singleMode := feedbackID != "" || feedbackType != ""
+	batchMode := feedbackHelpful != "" || feedbackNotRelevant != "" || feedbackIncorrect != ""
+
+	if singleMode && batchMode {
+		return fmt.Errorf("cannot mix --id/--type with batch flags (--helpful, --incorrect, --not-relevant)")
+	}
+
+	if !singleMode && !batchMode {
+		return fmt.Errorf("provide --id and --type, or use batch flags (--helpful, --incorrect, --not-relevant)")
+	}
+
+	client, err := recall.New(cfg)
 	if err != nil {
 		return fmt.Errorf("initialize client: %w", err)
 	}
 	defer client.Close()
 
+	if singleMode {
+		return runFeedbackSingle(cmd, client)
+	}
+	return runFeedbackBatch(cmd, client)
+}
+
+func runFeedbackSingle(cmd *cobra.Command, client *recall.Client) error {
+	if feedbackID == "" {
+		return fmt.Errorf("--id is required in single-item mode")
+	}
+	if feedbackType == "" {
+		return fmt.Errorf("--type is required in single-item mode")
+	}
+
+	ft, err := parseFeedbackType(feedbackType)
+	if err != nil {
+		return err
+	}
+
+	lore, err := client.Feedback(feedbackID, ft)
+	if err != nil {
+		return fmt.Errorf("apply feedback: %w", err)
+	}
+
+	return outputFeedbackSingle(cmd, feedbackID, lore)
+}
+
+func runFeedbackBatch(cmd *cobra.Command, client *recall.Client) error {
 	params := recall.FeedbackParams{}
 
 	if feedbackHelpful != "" {
@@ -65,24 +122,22 @@ func runFeedback(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("apply feedback: %w", err)
 	}
 
-	if len(result.Updated) == 0 {
-		fmt.Println("No lore entries were updated.")
-		return nil
-	}
+	return outputFeedbackBatch(cmd, result)
+}
 
-	fmt.Printf("Updated %d entries:\n", len(result.Updated))
-	for _, update := range result.Updated {
-		direction := "→"
-		if update.Current > update.Previous {
-			direction = "↑"
-		} else if update.Current < update.Previous {
-			direction = "↓"
-		}
-		fmt.Printf("  %s: %.2f %s %.2f (validated: %d)\n",
-			update.ID[:8], update.Previous, direction, update.Current, update.ValidationCount)
+func parseFeedbackType(s string) (recall.FeedbackType, error) {
+	normalized := strings.ToLower(strings.TrimSpace(s))
+	switch normalized {
+	case "helpful":
+		return recall.Helpful, nil
+	case "incorrect":
+		return recall.Incorrect, nil
+	case "not_relevant", "not-relevant", "notrelevant":
+		return recall.NotRelevant, nil
+	default:
+		return "", fmt.Errorf("invalid feedback type %q: valid types are %s",
+			s, strings.Join(validFeedbackTypes, ", "))
 	}
-
-	return nil
 }
 
 func splitAndTrim(s string) []string {
