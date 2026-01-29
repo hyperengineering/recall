@@ -68,14 +68,6 @@ func CosineDistance(a, b []float32) float32 {
 	return 1 - CosineSimilarity(a, b)
 }
 
-// RankedLore is the legacy result type for RankBySimilarity.
-// Deprecated: Use ScoredLore with Searcher interface.
-type RankedLore struct {
-	Lore     Lore
-	Score    float32
-	Distance float32
-}
-
 // CandidateLore represents a lore entry candidate for similarity search.
 type CandidateLore struct {
 	ID        string
@@ -124,44 +116,6 @@ func (s *BruteForceSearcher) Search(query []float32, candidates []CandidateLore,
 	})
 
 	// Apply top-k limit
-	if k > 0 && len(scored) > k {
-		scored = scored[:k]
-	}
-
-	return scored
-}
-
-// RankBySimilarity ranks lore entries by their similarity to a query embedding.
-// Returns entries sorted by similarity (highest first).
-func RankBySimilarity(query []float32, candidates []Lore, k int) []RankedLore {
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	scored := make([]RankedLore, 0, len(candidates))
-	for _, lore := range candidates {
-		if len(lore.Embedding) == 0 {
-			continue
-		}
-		embedding := UnpackEmbedding(lore.Embedding)
-		if embedding == nil {
-			continue
-		}
-		sim := CosineSimilarity(query, embedding)
-		scored = append(scored, RankedLore{
-			Lore:     lore,
-			Score:    sim,
-			Distance: 1 - sim,
-		})
-	}
-
-	// Sort by similarity descending (simple insertion sort for small k)
-	for i := 1; i < len(scored); i++ {
-		for j := i; j > 0 && scored[j].Score > scored[j-1].Score; j-- {
-			scored[j], scored[j-1] = scored[j-1], scored[j]
-		}
-	}
-
 	if k > 0 && len(scored) > k {
 		scored = scored[:k]
 	}
