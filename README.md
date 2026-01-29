@@ -27,66 +27,269 @@ go get github.com/hyperengineering/recall
 
 ## Quick Start
 
-### CLI Usage
+### 1. Configure
+
+Set the required environment variable:
 
 ```bash
-# Record new lore
-recall record "Queue consumers benefit from idempotency checks" -c PATTERN_OUTCOME
+export RECALL_DB_PATH="./data/lore.db"
+```
 
-# Query for relevant lore
+For Engram sync (optional):
+
+```bash
+export ENGRAM_URL="https://engram.example.com"
+export ENGRAM_API_KEY="your-api-key"
+export RECALL_SOURCE_ID="my-workstation"
+```
+
+### 2. Record Lore
+
+```bash
+# Record a new insight
+recall record --content "Queue consumers benefit from idempotency checks" --category PATTERN_OUTCOME
+
+# With optional context and confidence
+recall record --content "ORM generates N+1 queries without eager loading" \
+  --category DEPENDENCY_BEHAVIOR \
+  --context "story-2.1-performance" \
+  --confidence 0.7
+
+# Output as JSON
+recall record --content "Always validate input at API boundaries" \
+  --category INTERFACE_LESSON --json
+```
+
+### 3. Query Lore
+
+```bash
+# Search for relevant lore
 recall query "implementing message consumers"
 
-# Provide feedback on recalled lore
-recall feedback --helpful L1,L2
+# With filters
+recall query "database performance" --top 10 --min-confidence 0.6
 
-# Sync with Engram
-recall sync
+# Filter by category
+recall query "testing" --category TESTING_STRATEGY,PATTERN_OUTCOME
+
+# Output as JSON
+recall query "error handling" --json
 ```
 
-### Library Usage
+### 4. Provide Feedback
+
+After querying, lore entries are assigned session references (L1, L2, ...).
+
+```bash
+# Single-item feedback
+recall feedback --id L1 --type helpful
+recall feedback --id L2 --type incorrect
+recall feedback --id L3 --type not_relevant
+
+# Batch feedback
+recall feedback --helpful L1,L2 --incorrect L3
+
+# By lore ID directly
+recall feedback --id 01HXYZ123ABC --type helpful
+```
+
+### 5. Sync with Engram
+
+```bash
+# Push local changes to Engram
+recall sync push
+
+# Download full snapshot from Engram (replaces local data)
+recall sync bootstrap
+```
+
+## CLI Reference
+
+### Global Flags
+
+| Flag | Environment Variable | Description |
+|------|---------------------|-------------|
+| `--lore-path` | `RECALL_DB_PATH` | Path to local SQLite database (required) |
+| `--engram-url` | `ENGRAM_URL` | URL of Engram central service |
+| `--api-key` | `ENGRAM_API_KEY` | API key for Engram authentication |
+| `--source-id` | `RECALL_SOURCE_ID` | Client source identifier |
+| `--json` | - | Output as JSON instead of human-readable |
+
+### recall record
+
+Record a new lore entry.
+
+```
+recall record --content <text> --category <category> [flags]
+```
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--content` | - | (required) | Lore content (max 4000 chars) |
+| `--category` | `-c` | (required) | Lore category |
+| `--context` | - | - | Additional context (max 1000 chars) |
+| `--confidence` | - | 0.5 | Initial confidence (0.0-1.0) |
+
+**Examples:**
+
+```bash
+recall record --content "Pattern X works well for Y" -c PATTERN_OUTCOME
+recall record --content "Edge case Z" -c EDGE_CASE_DISCOVERY --context "story-1.2" --confidence 0.8
+```
+
+### recall query
+
+Search for relevant lore.
+
+```
+recall query <search terms> [flags]
+```
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--top` | `-k` | 5 | Maximum number of results |
+| `--min-confidence` | - | 0.0 | Minimum confidence threshold |
+| `--category` | - | - | Comma-separated categories to filter |
+
+**Examples:**
+
+```bash
+recall query "error handling patterns"
+recall query "performance" --top 10 --min-confidence 0.7
+recall query "testing" --category TESTING_STRATEGY,PATTERN_OUTCOME --json
+```
+
+### recall feedback
+
+Provide feedback on recalled lore.
+
+**Single-item mode:**
+
+```
+recall feedback --id <ref> --type <type>
+```
+
+| Flag | Description |
+|------|-------------|
+| `--id` | Lore ID or session reference (L1, L2, ...) |
+| `--type` | Feedback type: `helpful`, `incorrect`, `not_relevant` |
+
+**Batch mode:**
+
+```
+recall feedback [--helpful <refs>] [--incorrect <refs>] [--not-relevant <refs>]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--helpful` | Comma-separated helpful refs (+0.08 confidence) |
+| `--incorrect` | Comma-separated incorrect refs (-0.15 confidence) |
+| `--not-relevant` | Comma-separated not-relevant refs (no change) |
+
+**Examples:**
+
+```bash
+recall feedback --id L1 --type helpful
+recall feedback --helpful L1,L2 --incorrect L3
+recall feedback --id 01HXYZ123ABC --type incorrect --json
+```
+
+### recall sync push
+
+Push pending local changes to Engram.
+
+```
+recall sync push [flags]
+```
+
+Requires `ENGRAM_URL` and `ENGRAM_API_KEY` to be configured.
+
+**Example:**
+
+```bash
+recall sync push
+recall sync push --json
+```
+
+### recall sync bootstrap
+
+Download a full snapshot from Engram, replacing local data.
+
+```
+recall sync bootstrap [flags]
+```
+
+**Warning:** This replaces ALL local lore with the server snapshot.
+
+**Example:**
+
+```bash
+recall sync bootstrap
+recall sync bootstrap --json
+```
+
+### recall session
+
+List lore surfaced during the current session.
+
+```
+recall session [flags]
+```
+
+**Note:** In CLI mode, each command invocation is a separate session. This command is more useful in scripted or interactive scenarios.
+
+**Example:**
+
+```bash
+recall session
+recall session --json
+```
+
+### recall stats
+
+Display store statistics.
+
+```
+recall stats [flags]
+```
+
+**Example:**
+
+```bash
+recall stats
+recall stats --json
+```
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `RECALL_DB_PATH` | Yes | Path to local SQLite database |
+| `ENGRAM_URL` | No | URL of Engram central service |
+| `ENGRAM_API_KEY` | No* | API key for Engram (*required if ENGRAM_URL is set) |
+| `RECALL_SOURCE_ID` | No | Client identifier (defaults to hostname) |
+
+### Config Struct (Library)
 
 ```go
-package main
-
-import (
-    "context"
-    "github.com/hyperengineering/recall"
-)
-
-func main() {
-    // Create client
-    client, err := recall.New(recall.Config{
-        LorePath:  "./data/lore.db",
-        EngramURL: "https://engram.example.com",
-        APIKey:    "your-api-key",
-    })
-    if err != nil {
-        panic(err)
-    }
-    defer client.Close()
-
-    ctx := context.Background()
-
-    // Record lore
-    lore, _ := client.Record(ctx, recall.RecordParams{
-        Content:  "ORM generates N+1 queries without eager loading",
-        Category: recall.CategoryDependencyBehavior,
-        Context:  "performance-investigation",
-    })
-
-    // Query for relevant lore
-    result, _ := client.Query(ctx, recall.QueryParams{
-        Query:         "database performance",
-        K:             5,
-        MinConfidence: 0.5,
-    })
-
-    // Provide feedback
-    client.Feedback(ctx, recall.FeedbackParams{
-        Helpful: []string{"L1", "L2"},
-    })
+type Config struct {
+    LocalPath    string        // Path to local SQLite database (required)
+    EngramURL    string        // Central service URL (optional)
+    APIKey       string        // Engram API key
+    SourceID     string        // Client identifier (defaults to hostname)
+    SyncInterval time.Duration // Auto-sync interval (default: 5m)
+    AutoSync     bool          // Enable background sync (default: true)
 }
 ```
+
+### Offline Mode
+
+When `ENGRAM_URL` is not set, Recall operates in offline-only mode:
+- All local operations work normally (record, query, feedback)
+- Sync commands return an error
+- No network calls are made
 
 ## Lore Categories
 
@@ -113,33 +316,168 @@ Confidence represents how validated a lore entry is (0.0 - 1.0):
 | 0.8 - 1.0 | Repeatedly confirmed, high reliability |
 
 Feedback adjustments:
-- `helpful`: +0.08
-- `incorrect`: -0.15
+- `helpful`: +0.08 (capped at 1.0)
+- `incorrect`: -0.15 (floored at 0.0)
 - `not_relevant`: no change
 
-## Configuration
-
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `RECALL_LORE_PATH` | Path to local SQLite database |
-| `ENGRAM_URL` | URL of Engram central service |
-| `ENGRAM_API_KEY` | API key for Engram authentication |
-
-### Config Struct
+## Library Usage
 
 ```go
-type Config struct {
-    LorePath     string        // Local database path
-    EngramURL    string        // Central service URL (optional)
-    APIKey       string        // Engram API key
-    SourceID     string        // Client identifier
-    SyncInterval time.Duration // Auto-sync interval (default: 5m)
-    AutoSync     bool          // Enable background sync (default: true)
-    OfflineMode  bool          // Disable network operations
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/hyperengineering/recall"
+)
+
+func main() {
+    // Create client
+    client, err := recall.New(recall.Config{
+        LocalPath: "./data/lore.db",
+        EngramURL: "https://engram.example.com",
+        APIKey:    "your-api-key",
+    })
+    if err != nil {
+        panic(err)
+    }
+    defer client.Close()
+
+    // Record lore
+    lore, err := client.Record(
+        "ORM generates N+1 queries without eager loading",
+        recall.CategoryDependencyBehavior,
+        recall.WithContext("performance-investigation"),
+        recall.WithConfidence(0.7),
+    )
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Recorded: %s\n", lore.ID)
+
+    // Query for relevant lore
+    ctx := context.Background()
+    result, err := client.Query(ctx, recall.QueryParams{
+        Query: "database performance",
+        K:     5,
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    for _, l := range result.Lore {
+        fmt.Printf("[%s] %s\n", l.Category, l.Content)
+    }
+
+    // Provide feedback using session reference
+    if len(result.Lore) > 0 {
+        _, err = client.Feedback("L1", recall.Helpful)
+        if err != nil {
+            panic(err)
+        }
+    }
+
+    // Sync with Engram
+    if err := client.Sync(ctx); err != nil {
+        fmt.Printf("Sync failed: %v\n", err)
+    }
 }
 ```
+
+## JSON Output Mode
+
+All CLI commands support `--json` for structured output:
+
+```bash
+# Record with JSON output
+recall record --content "Test" -c PATTERN_OUTCOME --json
+```
+
+```json
+{
+  "id": "01HXYZ123ABC456DEF789GHI",
+  "content": "Test",
+  "category": "PATTERN_OUTCOME",
+  "confidence": 0.5,
+  "validation_count": 0,
+  "source_id": "my-workstation",
+  "created_at": "2026-01-29T10:30:00Z",
+  "updated_at": "2026-01-29T10:30:00Z"
+}
+```
+
+All JSON output uses `snake_case` field names.
+
+## Security
+
+### API Key Protection
+
+Recall follows security best practices for API key handling:
+
+- **Never logged**: API keys are never written to logs or debug output
+- **Never in errors**: Error messages never include API key values
+- **Never in CLI output**: The `--json` flag and human-readable output never expose keys
+- **Environment variables**: Configure keys via `ENGRAM_API_KEY` to avoid hardcoding
+
+**Recommended practices:**
+
+```bash
+# Good: Use environment variables
+export ENGRAM_API_KEY="sk-..."
+recall sync push
+
+# Avoid: Passing keys as flags (visible in shell history)
+recall --api-key "sk-..." sync push  # Not recommended
+```
+
+## Troubleshooting
+
+### Missing Configuration
+
+**Error:** `configuration: LocalPath: required: path to SQLite database — set RECALL_DB_PATH or use --lore-path`
+
+**Solution:** Set the required environment variable:
+
+```bash
+export RECALL_DB_PATH="./data/lore.db"
+```
+
+### Offline Mode Errors
+
+**Error:** `sync unavailable: ENGRAM_URL not configured (offline-only mode)`
+
+**Solution:** Configure Engram URL and API key for sync operations:
+
+```bash
+export ENGRAM_URL="https://engram.example.com"
+export ENGRAM_API_KEY="your-api-key"
+```
+
+Or accept offline-only mode — local operations (record, query, feedback) work without Engram.
+
+### Invalid Input Errors
+
+**Error:** `record lore: validation: Category: invalid: must be one of ARCHITECTURAL_DECISION, PATTERN_OUTCOME, ...`
+
+**Solution:** Use a valid category from the list above.
+
+**Error:** `record lore: validation: Content: exceeds 4000 character limit`
+
+**Solution:** Shorten the content to 4000 characters or less.
+
+**Error:** `invalid feedback type "wrong": valid types are helpful, incorrect, not_relevant`
+
+**Solution:** Use one of the valid feedback types.
+
+### Sync Failures
+
+**Error:** `push: sync: push_lore failed (status 401): Unauthorized`
+
+**Solution:** Check that `ENGRAM_API_KEY` is set correctly.
+
+**Error:** `bootstrap: sync: download_snapshot failed (status 503): Service Unavailable`
+
+**Solution:** The Engram service may be temporarily unavailable. Retry later.
 
 ## MCP Integration
 
@@ -174,6 +512,9 @@ make build
 
 # Install to GOPATH
 make install
+
+# Run all CI checks
+make ci
 ```
 
 ## Architecture
@@ -184,7 +525,7 @@ Recall is part of the Engram system:
 - **Recall** (this library): How agents retrieve and contribute lore
 - **Lore**: Individual learnings — the substance itself
 
-See [docs/engram.md](docs/engram.md) for the full technical design.
+See [docs/engram-recall.md](docs/engram-recall.md) for the full technical design.
 
 ## License
 
