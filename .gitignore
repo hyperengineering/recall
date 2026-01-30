@@ -48,6 +48,7 @@ temp/
 # Build caches
 .cache/
 .go/
+.gocache/
 .gomodcache/
 .gopath/
 
