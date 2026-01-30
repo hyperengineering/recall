@@ -727,3 +727,411 @@ func TestSyncer_SourceIDHeader_OnFlush(t *testing.T) {
 		t.Errorf("X-Recall-Source-ID = %q, want %q", receivedHeader, sourceID)
 	}
 }
+
+// ============================================================================
+// Syncer.SyncDelta() tests
+// Story 4.5: Delta Sync
+// ============================================================================
+
+// TestSyncer_SyncDelta_RequiresBootstrap verifies error when last_sync is empty.
+// Story 4.5 AC#4: Delta sync requires prior bootstrap.
+func TestSyncer_SyncDelta_RequiresBootstrap(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("HTTP should not be called when last_sync is empty")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.SyncDelta(context.Background())
+	if err == nil {
+		t.Fatal("expected error for missing bootstrap, got nil")
+	}
+	if !strings.Contains(err.Error(), "bootstrap") {
+		t.Errorf("error should mention bootstrap, got: %v", err)
+	}
+}
+
+// TestSyncer_SyncDelta_UpsertsLore verifies new/updated lore is upserted.
+// Story 4.5 AC#5: Delta sync updates local lore entries (upsert).
+func TestSyncer_SyncDelta_UpsertsLore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Set last_sync to simulate prior bootstrap
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	deltaResponse := `{
+		"lore": [
+			{
+				"id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+				"content": "Delta synced content",
+				"category": "PATTERN_OUTCOME",
+				"confidence": 0.85,
+				"sources": [],
+				"validation_count": 3,
+				"created_at": "2026-01-28T10:00:00Z",
+				"updated_at": "2026-01-29T14:30:00Z",
+				"embedding_status": "ready"
+			}
+		],
+		"deleted_ids": [],
+		"as_of": "2026-01-29T15:00:00Z"
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/lore/delta" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(deltaResponse))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.SyncDelta(context.Background())
+	if err != nil {
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+
+	// Verify lore was upserted
+	lore, err := store.Get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if lore.Content != "Delta synced content" {
+		t.Errorf("Content = %q, want %q", lore.Content, "Delta synced content")
+	}
+	if lore.Confidence != 0.85 {
+		t.Errorf("Confidence = %f, want 0.85", lore.Confidence)
+	}
+}
+
+// TestSyncer_SyncDelta_DeletesLore verifies deleted entries are removed.
+// Story 4.5 AC#5: Delta sync removes deleted entries.
+func TestSyncer_SyncDelta_DeletesLore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Set last_sync
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	// Insert lore that will be deleted
+	lore := &Lore{
+		ID:              "01ARZ3NDEKTSV4RRFFQ69G5DEL",
+		Content:         "Will be deleted",
+		Category:        CategoryPatternOutcome,
+		Confidence:      0.5,
+		EmbeddingStatus: "ready",
+	}
+	store.UpsertLore(lore)
+
+	deltaResponse := `{
+		"lore": [],
+		"deleted_ids": ["01ARZ3NDEKTSV4RRFFQ69G5DEL"],
+		"as_of": "2026-01-29T15:00:00Z"
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/lore/delta" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(deltaResponse))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.SyncDelta(context.Background())
+	if err != nil {
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+
+	// Verify lore was deleted
+	_, err = store.Get("01ARZ3NDEKTSV4RRFFQ69G5DEL")
+	if err != ErrNotFound {
+		t.Errorf("expected ErrNotFound after delete, got: %v", err)
+	}
+}
+
+// TestSyncer_SyncDelta_UpdatesLastSync verifies last_sync is updated with AsOf.
+// Story 4.5 AC#6: Delta sync updates last_sync timestamp on success.
+func TestSyncer_SyncDelta_UpdatesLastSync(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Set last_sync
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	deltaResponse := `{
+		"lore": [],
+		"deleted_ids": [],
+		"as_of": "2026-01-29T15:00:00Z"
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/lore/delta" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(deltaResponse))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.SyncDelta(context.Background())
+	if err != nil {
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+
+	// Verify last_sync was updated
+	lastSync, err := store.GetMetadata("last_sync")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if lastSync != "2026-01-29T15:00:00Z" {
+		t.Errorf("last_sync = %q, want %q", lastSync, "2026-01-29T15:00:00Z")
+	}
+}
+
+// TestSyncer_SyncDelta_IncludesSourceID verifies X-Recall-Source-ID header is sent.
+// Story 4.5 AC#9: Delta sync includes X-Recall-Source-ID header when configured.
+func TestSyncer_SyncDelta_IncludesSourceID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	var receivedHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Get("X-Recall-Source-ID")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"lore": [], "deleted_ids": [], "as_of": "2026-01-29T15:00:00Z"}`))
+	}))
+	defer server.Close()
+
+	sourceID := "delta-client-123"
+	syncer := NewSyncer(store, server.URL, "test-key", sourceID)
+
+	err = syncer.SyncDelta(context.Background())
+	if err != nil {
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+
+	if receivedHeader != sourceID {
+		t.Errorf("X-Recall-Source-ID = %q, want %q", receivedHeader, sourceID)
+	}
+}
+
+// TestSyncer_SyncDelta_EmptyDelta verifies empty delta is handled gracefully.
+func TestSyncer_SyncDelta_EmptyDelta(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"lore": [], "deleted_ids": [], "as_of": "2026-01-29T15:00:00Z"}`))
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.SyncDelta(context.Background())
+	if err != nil {
+		t.Errorf("SyncDelta with empty delta should not error: %v", err)
+	}
+}
+
+// TestSyncer_SyncDelta_PreservesAllFields verifies all fields from delta are preserved.
+// Story 4.5: Delta sync should not lose data.
+func TestSyncer_SyncDelta_PreservesAllFields(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Set last_sync to simulate prior bootstrap
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	// Delta response with all fields populated
+	deltaResponse := `{
+		"lore": [
+			{
+				"id": "01ARZ3NDEKTSV4RRFFQ69GFULL",
+				"content": "Full field content",
+				"context": "test-context",
+				"category": "PATTERN_OUTCOME",
+				"confidence": 0.92,
+				"sources": ["source-1", "source-2"],
+				"validation_count": 5,
+				"source_id": "test-source-id",
+				"embedding_status": "ready",
+				"created_at": "2026-01-28T10:00:00Z",
+				"updated_at": "2026-01-29T14:30:00Z"
+			}
+		],
+		"deleted_ids": [],
+		"as_of": "2026-01-29T15:00:00Z"
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/lore/delta" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(deltaResponse))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.SyncDelta(context.Background())
+	if err != nil {
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+
+	// Verify lore was upserted with all fields preserved
+	lore, err := store.Get("01ARZ3NDEKTSV4RRFFQ69GFULL")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+
+	// Verify ValidationCount is preserved
+	if lore.ValidationCount != 5 {
+		t.Errorf("ValidationCount = %d, want 5", lore.ValidationCount)
+	}
+
+	// Verify Sources are preserved
+	if len(lore.Sources) != 2 {
+		t.Errorf("Sources length = %d, want 2", len(lore.Sources))
+	} else {
+		if lore.Sources[0] != "source-1" {
+			t.Errorf("Sources[0] = %q, want %q", lore.Sources[0], "source-1")
+		}
+		if lore.Sources[1] != "source-2" {
+			t.Errorf("Sources[1] = %q, want %q", lore.Sources[1], "source-2")
+		}
+	}
+
+	// Verify SourceID is preserved
+	if lore.SourceID != "test-source-id" {
+		t.Errorf("SourceID = %q, want %q", lore.SourceID, "test-source-id")
+	}
+
+	// Verify EmbeddingStatus is preserved
+	if lore.EmbeddingStatus != "ready" {
+		t.Errorf("EmbeddingStatus = %q, want %q", lore.EmbeddingStatus, "ready")
+	}
+
+	// Verify Context is preserved
+	if lore.Context != "test-context" {
+		t.Errorf("Context = %q, want %q", lore.Context, "test-context")
+	}
+
+	// Verify other basic fields
+	if lore.Content != "Full field content" {
+		t.Errorf("Content = %q, want %q", lore.Content, "Full field content")
+	}
+	if lore.Confidence != 0.92 {
+		t.Errorf("Confidence = %f, want 0.92", lore.Confidence)
+	}
+}
+
+// TestSyncer_SyncDelta_DefaultsEmbeddingStatus verifies empty embedding_status defaults to "ready".
+// Story 4.5: Delta entries should default to "ready" embedding status when not specified.
+func TestSyncer_SyncDelta_DefaultsEmbeddingStatus(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Set last_sync to simulate prior bootstrap
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	// Delta response with empty embedding_status
+	deltaResponse := `{
+		"lore": [
+			{
+				"id": "01ARZ3NDEKTSV4RRFFQ69GDFLT",
+				"content": "Content with default status",
+				"category": "PATTERN_OUTCOME",
+				"confidence": 0.8,
+				"sources": [],
+				"validation_count": 0,
+				"embedding_status": "",
+				"created_at": "2026-01-28T10:00:00Z"
+			}
+		],
+		"deleted_ids": [],
+		"as_of": "2026-01-29T15:00:00Z"
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/lore/delta" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(deltaResponse))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.SyncDelta(context.Background())
+	if err != nil {
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+
+	// Verify lore was upserted with default embedding_status
+	lore, err := store.Get("01ARZ3NDEKTSV4RRFFQ69GDFLT")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+
+	// Verify EmbeddingStatus defaults to "ready"
+	if lore.EmbeddingStatus != "ready" {
+		t.Errorf("EmbeddingStatus = %q, want %q (default)", lore.EmbeddingStatus, "ready")
+	}
+}

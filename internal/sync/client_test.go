@@ -517,3 +517,181 @@ func TestHTTPClient_SourceIDHeader_OnSnapshot(t *testing.T) {
 		t.Errorf("X-Recall-Source-ID = %q, want %q", receivedHeader, sourceID)
 	}
 }
+
+// TestHTTPClient_GetDelta_Success verifies delta response parsing.
+// Story 4.5 AC#2: HTTPClient implements GetDelta calling GET /lore/delta?since={timestamp}
+func TestHTTPClient_GetDelta_Success(t *testing.T) {
+	expectedResponse := `{
+		"lore": [
+			{
+				"id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+				"content": "SQLite requires explicit BEGIN for write transactions",
+				"category": "DEPENDENCY_BEHAVIOR",
+				"confidence": 0.8,
+				"sources": ["devcontainer-abc123"],
+				"validation_count": 2,
+				"created_at": "2026-01-28T10:00:00Z",
+				"updated_at": "2026-01-29T14:30:00Z",
+				"embedding_status": "ready"
+			}
+		],
+		"deleted_ids": ["01ARZ3NDEKTSV4RRFFQ69G5FAX"],
+		"as_of": "2026-01-29T14:35:00Z"
+	}`
+
+	var receivedSince string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/lore/delta" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != "GET" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		receivedSince = r.URL.Query().Get("since")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(expectedResponse))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "")
+	since := time.Date(2026, 1, 28, 0, 0, 0, 0, time.UTC)
+	result, err := client.GetDelta(context.Background(), since)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedSince != "2026-01-28T00:00:00Z" {
+		t.Errorf("since parameter = %q, want %q", receivedSince, "2026-01-28T00:00:00Z")
+	}
+	if len(result.Lore) != 1 {
+		t.Fatalf("expected 1 lore entry, got %d", len(result.Lore))
+	}
+	if result.Lore[0].ID != "01ARZ3NDEKTSV4RRFFQ69G5FAV" {
+		t.Errorf("Lore[0].ID = %q, want %q", result.Lore[0].ID, "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	}
+	if result.Lore[0].Content != "SQLite requires explicit BEGIN for write transactions" {
+		t.Errorf("Lore[0].Content = %q", result.Lore[0].Content)
+	}
+	if len(result.DeletedIDs) != 1 || result.DeletedIDs[0] != "01ARZ3NDEKTSV4RRFFQ69G5FAX" {
+		t.Errorf("DeletedIDs = %v, want [01ARZ3NDEKTSV4RRFFQ69G5FAX]", result.DeletedIDs)
+	}
+	if result.AsOf != "2026-01-29T14:35:00Z" {
+		t.Errorf("AsOf = %q, want %q", result.AsOf, "2026-01-29T14:35:00Z")
+	}
+}
+
+// TestHTTPClient_GetDelta_EmptyResult verifies empty delta is handled.
+// Story 4.5 AC#3: DeltaResult contains new/updated lore entries, deleted IDs, and AsOf timestamp
+func TestHTTPClient_GetDelta_EmptyResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"lore": [], "deleted_ids": [], "as_of": "2026-01-29T14:35:00Z"}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-key", "")
+	result, err := client.GetDelta(context.Background(), time.Now())
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Lore) != 0 {
+		t.Errorf("expected empty lore, got %d entries", len(result.Lore))
+	}
+	if len(result.DeletedIDs) != 0 {
+		t.Errorf("expected empty deleted_ids, got %d", len(result.DeletedIDs))
+	}
+}
+
+// TestHTTPClient_GetDelta_Unauthorized verifies 401 error handling.
+func TestHTTPClient_GetDelta_Unauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error": "invalid api key"}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "bad-key", "")
+	_, err := client.GetDelta(context.Background(), time.Now())
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var syncErr *recall.SyncError
+	if !errors.As(err, &syncErr) {
+		t.Fatalf("expected SyncError, got %T", err)
+	}
+	if syncErr.StatusCode != http.StatusUnauthorized {
+		t.Errorf("StatusCode = %d, want %d", syncErr.StatusCode, http.StatusUnauthorized)
+	}
+	if syncErr.Operation != "get_delta" {
+		t.Errorf("Operation = %q, want %q", syncErr.Operation, "get_delta")
+	}
+}
+
+// TestHTTPClient_GetDelta_BadRequest verifies 400 error handling.
+func TestHTTPClient_GetDelta_BadRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error": "invalid since parameter"}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-key", "")
+	_, err := client.GetDelta(context.Background(), time.Time{})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var syncErr *recall.SyncError
+	if !errors.As(err, &syncErr) {
+		t.Fatalf("expected SyncError, got %T", err)
+	}
+	if syncErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("StatusCode = %d, want %d", syncErr.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// TestHTTPClient_GetDelta_SourceIDHeader verifies X-Recall-Source-ID header is sent.
+// Story 4.5 AC#9: Delta sync includes X-Recall-Source-ID header when configured
+func TestHTTPClient_GetDelta_SourceIDHeader(t *testing.T) {
+	sourceID := "delta-client-123"
+	var receivedHeader string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Get("X-Recall-Source-ID")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"lore": [], "deleted_ids": [], "as_of": "2026-01-29T14:35:00Z"}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-key", sourceID)
+	_, err := client.GetDelta(context.Background(), time.Now())
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedHeader != sourceID {
+		t.Errorf("X-Recall-Source-ID = %q, want %q", receivedHeader, sourceID)
+	}
+}
+
+// TestHTTPClient_GetDelta_NetworkError verifies network error handling.
+func TestHTTPClient_GetDelta_NetworkError(t *testing.T) {
+	client := NewHTTPClient("http://localhost:1", "test-key", "")
+	_, err := client.GetDelta(context.Background(), time.Now())
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var syncErr *recall.SyncError
+	if !errors.As(err, &syncErr) {
+		t.Fatalf("expected SyncError, got %T", err)
+	}
+	if syncErr.Operation != "get_delta" {
+		t.Errorf("Operation = %q, want %q", syncErr.Operation, "get_delta")
+	}
+}

@@ -29,6 +29,10 @@ type EngramClient interface {
 
 	// PushFeedback sends a batch of feedback updates to Engram.
 	PushFeedback(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
+
+	// GetDelta retrieves lore changes since the given timestamp.
+	// Used for incremental sync after initial bootstrap.
+	GetDelta(ctx context.Context, since time.Time) (*DeltaResult, error)
 }
 
 // HTTPClient implements EngramClient using net/http.
@@ -188,6 +192,34 @@ func (c *HTTPClient) PushFeedback(ctx context.Context, req *PushFeedbackRequest)
 	var result PushFeedbackResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, &recall.SyncError{Operation: "push_feedback", Err: err}
+	}
+
+	return &result, nil
+}
+
+func (c *HTTPClient) GetDelta(ctx context.Context, since time.Time) (*DeltaResult, error) {
+	url := fmt.Sprintf("%s/api/v1/lore/delta?since=%s", c.baseURL, since.Format(time.RFC3339))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "get_delta", Err: err}
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "get_delta", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, newSyncError("get_delta", resp.StatusCode, respBody)
+	}
+
+	var result DeltaResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &recall.SyncError{Operation: "get_delta", Err: err}
 	}
 
 	return &result, nil

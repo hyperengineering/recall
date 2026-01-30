@@ -239,6 +239,46 @@ func outputSyncBootstrap(cmd *cobra.Command, stats *recall.StoreStats, duration 
 	return nil
 }
 
+// SyncDeltaResult for JSON output.
+type SyncDeltaResult struct {
+	LoreCountBefore int   `json:"lore_count_before"`
+	LoreCountAfter  int   `json:"lore_count_after"`
+	DurationMs      int64 `json:"duration_ms"`
+}
+
+// outputSyncDelta prints delta sync results.
+func outputSyncDelta(cmd *cobra.Command, before, after *recall.StoreStats, duration time.Duration) error {
+	countBefore := 0
+	countAfter := 0
+	if before != nil {
+		countBefore = before.LoreCount
+	}
+	if after != nil {
+		countAfter = after.LoreCount
+	}
+
+	if outputJSON {
+		return outputAsJSON(cmd, SyncDeltaResult{
+			LoreCountBefore: countBefore,
+			LoreCountAfter:  countAfter,
+			DurationMs:      duration.Milliseconds(),
+		})
+	}
+
+	out := cmd.OutOrStdout()
+	printSuccess(out, "Delta sync complete (took %s)", duration.Round(time.Millisecond))
+
+	diff := countAfter - countBefore
+	if diff > 0 {
+		_, _ = fmt.Fprintf(out, "  Added: %d entries\n", diff)
+	} else if diff < 0 {
+		_, _ = fmt.Fprintf(out, "  Removed: %d entries\n", -diff)
+	}
+	_, _ = fmt.Fprintf(out, "  Local lore count: %d\n", countAfter)
+
+	return nil
+}
+
 // outputSessionLore prints session lore list.
 func outputSessionLore(cmd *cobra.Command, lore []recall.SessionLore) error {
 	if outputJSON {

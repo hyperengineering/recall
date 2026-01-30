@@ -367,6 +367,20 @@ func (c *Client) SyncPull(ctx context.Context) error {
 	return c.syncer.Pull(ctx)
 }
 
+// SyncDelta fetches and applies incremental changes from Engram.
+//
+// This performs an efficient delta sync, fetching only changes since the last
+// sync rather than downloading the full database. Requires prior Bootstrap.
+//
+// Returns ErrOffline if Engram is not configured.
+// Returns error if Bootstrap has not been run (no last_sync timestamp).
+func (c *Client) SyncDelta(ctx context.Context) error {
+	if c.syncer == nil {
+		return ErrOffline
+	}
+	return c.syncer.SyncDelta(ctx)
+}
+
 // Bootstrap downloads a full snapshot from Engram and replaces the local lore.
 //
 // This is used to initialize or refresh the local database with the complete

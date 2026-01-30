@@ -1696,3 +1696,174 @@ func TestStore_ApplyFeedback_QueuesNotRelevantOutcome(t *testing.T) {
 		t.Errorf("Outcome = %q, want %q", feedbackPayload.Outcome, "not_relevant")
 	}
 }
+
+// TestStore_UpsertLore_Insert verifies insert behavior when lore doesn't exist.
+// Story 4.5: Delta sync upserts new/updated lore entries.
+func TestStore_UpsertLore_Insert(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	lore := &Lore{
+		ID:              "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Content:         "Test lore content",
+		Category:        CategoryDependencyBehavior,
+		Confidence:      0.8,
+		EmbeddingStatus: "ready",
+	}
+
+	err = store.UpsertLore(lore)
+	if err != nil {
+		t.Fatalf("UpsertLore failed: %v", err)
+	}
+
+	// Verify it was inserted
+	got, err := store.Get(lore.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if got.Content != lore.Content {
+		t.Errorf("Content = %q, want %q", got.Content, lore.Content)
+	}
+	if got.Confidence != lore.Confidence {
+		t.Errorf("Confidence = %f, want %f", got.Confidence, lore.Confidence)
+	}
+}
+
+// TestStore_UpsertLore_Update verifies update behavior when lore exists.
+// Story 4.5: Delta sync upserts new/updated lore entries.
+func TestStore_UpsertLore_Update(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert initial lore
+	original := &Lore{
+		ID:              "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Content:         "Original content",
+		Category:        CategoryDependencyBehavior,
+		Confidence:      0.5,
+		EmbeddingStatus: "pending",
+	}
+	err = store.UpsertLore(original)
+	if err != nil {
+		t.Fatalf("initial UpsertLore failed: %v", err)
+	}
+
+	// Update with new values
+	updated := &Lore{
+		ID:              "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Content:         "Updated content",
+		Category:        CategoryDependencyBehavior,
+		Confidence:      0.9,
+		EmbeddingStatus: "ready",
+	}
+	err = store.UpsertLore(updated)
+	if err != nil {
+		t.Fatalf("update UpsertLore failed: %v", err)
+	}
+
+	// Verify update
+	got, err := store.Get(updated.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if got.Content != updated.Content {
+		t.Errorf("Content = %q, want %q", got.Content, updated.Content)
+	}
+	if got.Confidence != updated.Confidence {
+		t.Errorf("Confidence = %f, want %f", got.Confidence, updated.Confidence)
+	}
+	if got.EmbeddingStatus != updated.EmbeddingStatus {
+		t.Errorf("EmbeddingStatus = %q, want %q", got.EmbeddingStatus, updated.EmbeddingStatus)
+	}
+}
+
+// TestStore_UpsertLore_StoreClosed verifies error when store is closed.
+func TestStore_UpsertLore_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	lore := &Lore{ID: "test", Content: "test", Category: CategoryPatternOutcome}
+	err = store.UpsertLore(lore)
+	if err != ErrStoreClosed {
+		t.Errorf("expected ErrStoreClosed, got %v", err)
+	}
+}
+
+// TestStore_DeleteLoreByID_Exists verifies deletion of existing lore.
+// Story 4.5: Delta sync removes deleted entries.
+func TestStore_DeleteLoreByID_Exists(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore first
+	lore := &Lore{
+		ID:              "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Content:         "Test lore content",
+		Category:        CategoryDependencyBehavior,
+		Confidence:      0.8,
+		EmbeddingStatus: "ready",
+	}
+	err = store.UpsertLore(lore)
+	if err != nil {
+		t.Fatalf("UpsertLore failed: %v", err)
+	}
+
+	// Delete it
+	err = store.DeleteLoreByID(lore.ID)
+	if err != nil {
+		t.Fatalf("DeleteLoreByID failed: %v", err)
+	}
+
+	// Verify it's gone
+	_, err = store.Get(lore.ID)
+	if err != ErrNotFound {
+		t.Errorf("expected ErrNotFound after delete, got %v", err)
+	}
+}
+
+// TestStore_DeleteLoreByID_NotExists verifies no error when lore doesn't exist.
+func TestStore_DeleteLoreByID_NotExists(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Delete non-existent lore should not error
+	err = store.DeleteLoreByID("nonexistent-id")
+	if err != nil {
+		t.Errorf("expected no error for non-existent ID, got %v", err)
+	}
+}
+
+// TestStore_DeleteLoreByID_StoreClosed verifies error when store is closed.
+func TestStore_DeleteLoreByID_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	err = store.DeleteLoreByID("test")
+	if err != ErrStoreClosed {
+		t.Errorf("expected ErrStoreClosed, got %v", err)
+	}
+}

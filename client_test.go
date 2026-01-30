@@ -1463,3 +1463,23 @@ func TestClient_Bootstrap_OfflineMode(t *testing.T) {
 	}
 }
 
+// TestClient_SyncDelta_OfflineMode verifies SyncDelta returns ErrOffline when not configured.
+// Story 4.5 AC#7: Client.SyncDelta(ctx) is exposed as public API.
+func TestClient_SyncDelta_OfflineMode(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Create client without Engram URL (offline mode)
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// SyncDelta should return ErrOffline
+	err = client.SyncDelta(context.Background())
+	if !errors.Is(err, recall.ErrOffline) {
+		t.Errorf("SyncDelta() error = %v, want ErrOffline", err)
+	}
+}
+

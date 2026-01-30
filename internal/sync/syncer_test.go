@@ -13,10 +13,11 @@ import (
 
 // mockEngramClient implements EngramClient for testing.
 type mockEngramClient struct {
-	healthCheckFn     func(ctx context.Context) (*HealthResponse, error)
+	healthCheckFn      func(ctx context.Context) (*HealthResponse, error)
 	downloadSnapshotFn func(ctx context.Context) (io.ReadCloser, error)
-	pushLoreFn        func(ctx context.Context, req *PushLoreRequest) (*PushLoreResponse, error)
-	pushFeedbackFn    func(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
+	pushLoreFn         func(ctx context.Context, req *PushLoreRequest) (*PushLoreResponse, error)
+	pushFeedbackFn     func(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
+	getDeltaFn         func(ctx context.Context, since time.Time) (*DeltaResult, error)
 }
 
 func (m *mockEngramClient) HealthCheck(ctx context.Context) (*HealthResponse, error) {
@@ -43,6 +44,13 @@ func (m *mockEngramClient) PushLore(ctx context.Context, req *PushLoreRequest) (
 func (m *mockEngramClient) PushFeedback(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error) {
 	if m.pushFeedbackFn != nil {
 		return m.pushFeedbackFn(ctx, req)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) GetDelta(ctx context.Context, since time.Time) (*DeltaResult, error) {
+	if m.getDeltaFn != nil {
+		return m.getDeltaFn(ctx, since)
 	}
 	return nil, errors.New("not implemented")
 }

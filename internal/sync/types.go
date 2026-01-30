@@ -58,3 +58,27 @@ type FeedbackUpdate struct {
 	CurrentConfidence  float64 `json:"current_confidence"`
 	ValidationCount    int     `json:"validation_count"`
 }
+
+// DeltaResult contains incremental changes from Engram.
+// Returned by GET /api/v1/lore/delta endpoint.
+type DeltaResult struct {
+	Lore       []LoreEntry `json:"lore"`
+	DeletedIDs []string    `json:"deleted_ids"`
+	AsOf       string      `json:"as_of"`
+}
+
+// LoreEntry represents a full lore entry from Engram delta response.
+type LoreEntry struct {
+	ID              string   `json:"id"`
+	Content         string   `json:"content"`
+	Context         string   `json:"context,omitempty"`
+	Category        string   `json:"category"`
+	Confidence      float64  `json:"confidence"`
+	Embedding       []byte   `json:"embedding,omitempty"`
+	SourceID        string   `json:"source_id,omitempty"`
+	Sources         []string `json:"sources"`
+	ValidationCount int      `json:"validation_count"`
+	CreatedAt       string   `json:"created_at"`
+	UpdatedAt       string   `json:"updated_at"`
+	EmbeddingStatus string   `json:"embedding_status"`
+}

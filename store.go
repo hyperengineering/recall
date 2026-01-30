@@ -1130,6 +1130,110 @@ func (s *Store) FailSyncEntries(queueIDs []int64, lastError string) error {
 	return err
 }
 
+// UpsertLore inserts or updates a lore entry.
+// If lore with the same ID exists, it updates all fields.
+// If lore doesn't exist, it inserts a new entry.
+// Used by delta sync to apply incremental changes.
+func (s *Store) UpsertLore(lore *Lore) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	var embeddingBlob []byte
+	if len(lore.Embedding) > 0 {
+		embeddingBlob = lore.Embedding
+	}
+
+	// sources defaults to "[]" to match Engram schema
+	sourcesStr := "[]"
+	if len(lore.Sources) > 0 {
+		sourcesStr = strings.Join(lore.Sources, ",")
+	}
+
+	var lastValidatedAtStr *string
+	if lore.LastValidatedAt != nil {
+		ts := lore.LastValidatedAt.Format(time.RFC3339)
+		lastValidatedAtStr = &ts
+	}
+
+	// Default embedding_status to 'pending' if empty
+	embeddingStatus := lore.EmbeddingStatus
+	if embeddingStatus == "" {
+		embeddingStatus = "pending"
+	}
+
+	now := time.Now().UTC()
+	if lore.CreatedAt.IsZero() {
+		lore.CreatedAt = now
+	}
+	if lore.UpdatedAt.IsZero() {
+		lore.UpdatedAt = now
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO lore_entries (id, content, context, category, confidence, embedding, embedding_status,
+		                 source_id, sources, validation_count, last_validated_at,
+		                 created_at, updated_at, deleted_at, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			content = excluded.content,
+			context = excluded.context,
+			category = excluded.category,
+			confidence = excluded.confidence,
+			embedding = excluded.embedding,
+			embedding_status = excluded.embedding_status,
+			source_id = excluded.source_id,
+			sources = excluded.sources,
+			validation_count = excluded.validation_count,
+			last_validated_at = excluded.last_validated_at,
+			updated_at = excluded.updated_at,
+			deleted_at = NULL,
+			synced_at = excluded.synced_at
+	`,
+		lore.ID,
+		lore.Content,
+		nullString(lore.Context),
+		string(lore.Category),
+		lore.Confidence,
+		embeddingBlob,
+		embeddingStatus,
+		lore.SourceID,
+		sourcesStr,
+		lore.ValidationCount,
+		lastValidatedAtStr,
+		lore.CreatedAt.Format(time.RFC3339),
+		lore.UpdatedAt.Format(time.RFC3339),
+		nil, // synced_at - set to NULL for delta-synced entries
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert lore: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteLoreByID permanently removes a lore entry by ID.
+// Used by delta sync to remove entries that were deleted on the server.
+// Returns nil if the entry doesn't exist.
+func (s *Store) DeleteLoreByID(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	_, err := s.db.Exec("DELETE FROM lore_entries WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("store: delete lore: %w", err)
+	}
+
+	return nil
+}
+
 // GetLoreByIDs retrieves multiple lore entries by ID.
 func (s *Store) GetLoreByIDs(ids []string) ([]Lore, error) {
 	s.mu.RLock()

@@ -52,9 +52,28 @@ Example:
 	RunE: runSyncBootstrap,
 }
 
+var syncDeltaCmd = &cobra.Command{
+	Use:   "delta",
+	Short: "Fetch incremental updates from Engram",
+	Long: `Fetch only changes since the last sync, efficiently keeping local data current.
+
+This is faster than bootstrap for regular updates:
+  - Downloads only new, updated, and deleted entries
+  - Preserves locally recorded lore
+  - Updates the last_sync timestamp on success
+
+Requires: Prior bootstrap (run 'recall sync bootstrap' first)
+
+Example:
+  recall sync delta
+  recall sync delta --json`,
+	RunE: runSyncDelta,
+}
+
 func init() {
 	syncCmd.AddCommand(syncPushCmd)
 	syncCmd.AddCommand(syncBootstrapCmd)
+	syncCmd.AddCommand(syncDeltaCmd)
 }
 
 func runSyncPush(cmd *cobra.Command, args []string) error {
@@ -133,4 +152,44 @@ func runSyncBootstrap(cmd *cobra.Command, args []string) error {
 	stats, _ := client.Stats()
 
 	return outputSyncBootstrap(cmd, stats, duration)
+}
+
+func runSyncDelta(cmd *cobra.Command, args []string) error {
+	cfg, err := loadAndValidateConfig()
+	if err != nil {
+		return err
+	}
+
+	if cfg.IsOffline() {
+		return fmt.Errorf("delta sync unavailable: ENGRAM_URL not configured (offline-only mode)")
+	}
+
+	client, err := recall.New(cfg)
+	if err != nil {
+		return fmt.Errorf("initialize client: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	statsBefore, _ := client.Stats()
+
+	var deltaErr error
+	start := time.Now()
+
+	out := cmd.OutOrStdout()
+	deltaErr = runWithSpinner(out, "Syncing delta from Engram", func() error {
+		return client.SyncDelta(ctx)
+	})
+
+	duration := time.Since(start)
+
+	if deltaErr != nil {
+		return fmt.Errorf("delta sync: %w", deltaErr)
+	}
+
+	statsAfter, _ := client.Stats()
+
+	return outputSyncDelta(cmd, statsBefore, statsAfter, duration)
 }
