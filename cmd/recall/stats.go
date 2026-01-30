@@ -48,7 +48,7 @@ func runStats(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("initialize client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	stats, err := client.Stats()
 	if err != nil {
@@ -89,12 +89,12 @@ func runStats(cmd *cobra.Command, args []string) error {
 
 	// Human-readable output with styling
 	printInfo(out, "Local Store Statistics")
-	fmt.Fprintf(out, "  Lore count:     %d\n", stats.LoreCount)
-	fmt.Fprintf(out, "  Pending sync:   %d\n", stats.PendingSync)
-	fmt.Fprintf(out, "  Schema version: %s\n", stats.SchemaVersion)
+	_, _ = fmt.Fprintf(out, "  Lore count:     %d\n", stats.LoreCount)
+	_, _ = fmt.Fprintf(out, "  Pending sync:   %d\n", stats.PendingSync)
+	_, _ = fmt.Fprintf(out, "  Schema version: %s\n", stats.SchemaVersion)
 
 	if !stats.LastSync.IsZero() {
-		fmt.Fprintf(out, "  Last sync:      %s (%s ago)\n",
+		_, _ = fmt.Fprintf(out, "  Last sync:      %s (%s ago)\n",
 			stats.LastSync.Format(time.RFC3339),
 			time.Since(stats.LastSync).Round(time.Minute))
 	} else {
@@ -102,7 +102,7 @@ func runStats(cmd *cobra.Command, args []string) error {
 	}
 
 	if health != nil {
-		fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out)
 		printInfo(out, "Health Check")
 
 		if health.Healthy {
@@ -112,15 +112,15 @@ func runStats(cmd *cobra.Command, args []string) error {
 		}
 
 		if health.StoreOK {
-			fmt.Fprintf(out, "  Store:  %s\n", successStyle.Render("OK"))
+			_, _ = fmt.Fprintf(out, "  Store:  %s\n", successStyle.Render("OK"))
 		} else {
-			fmt.Fprintf(out, "  Store:  %s\n", errorStyle.Render("FAILED"))
+			_, _ = fmt.Fprintf(out, "  Store:  %s\n", errorStyle.Render("FAILED"))
 		}
 
 		if health.EngramReachable {
-			fmt.Fprintf(out, "  Engram: %s\n", successStyle.Render("reachable"))
+			_, _ = fmt.Fprintf(out, "  Engram: %s\n", successStyle.Render("reachable"))
 		} else {
-			fmt.Fprintf(out, "  Engram: %s\n", warningStyle.Render("unreachable"))
+			_, _ = fmt.Fprintf(out, "  Engram: %s\n", warningStyle.Render("unreachable"))
 		}
 
 		if health.Error != "" {

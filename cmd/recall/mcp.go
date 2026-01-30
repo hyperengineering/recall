@@ -51,7 +51,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Start MCP server over stdio
 	server := recallmcp.NewServer(client)

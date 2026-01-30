@@ -58,14 +58,6 @@ type engramLoreDTO struct {
 	CreatedAt  string  `json:"created_at"`
 }
 
-// engramIngestResponse represents the ingest response.
-type engramIngestResponse struct {
-	Accepted int      `json:"accepted"`
-	Merged   int      `json:"merged"`
-	Rejected int      `json:"rejected"`
-	Errors   []string `json:"errors"`
-}
-
 // engramDeltaResponse represents the delta sync response.
 type engramDeltaResponse struct {
 	Lore       []engramLoreDTO `json:"lore"`
@@ -108,7 +100,7 @@ func (s *Syncer) Health(ctx context.Context) (*engramHealthResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("health check failed: %s", resp.Status)
@@ -233,7 +225,7 @@ func (s *Syncer) pushLoreEntries(ctx context.Context, entries []SyncQueueEntry) 
 	if err != nil {
 		return s.failEntries(entries, err.Error())
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -302,7 +294,7 @@ func (s *Syncer) pushFeedbackEntries(ctx context.Context, entries []SyncQueueEnt
 	if err != nil {
 		return s.failEntries(entries, err.Error())
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -364,7 +356,7 @@ func (s *Syncer) Pull(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -417,7 +409,7 @@ func (s *Syncer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bootstrap: download: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -508,7 +500,7 @@ func (s *Syncer) Flush(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("flush failed: %s", resp.Status)

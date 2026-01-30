@@ -21,7 +21,7 @@ func TestNew_ValidConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if client == nil {
 		t.Fatal("New() returned nil client")
@@ -36,14 +36,14 @@ func TestNew_EmptyLocalPath_UsesDefault(t *testing.T) {
 	// Use temp dir as working directory to avoid polluting workspace
 	tmpDir := t.TempDir()
 	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
+	_ = os.Chdir(tmpDir)
+	defer func() { _ = os.Chdir(origDir) }()
 
 	client, err := recall.New(recall.Config{LocalPath: ""})
 	if err != nil {
 		t.Fatalf("New() with empty LocalPath should succeed with default, got error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Verify database was created in default location
 	defaultPath := filepath.Join(tmpDir, "data", "lore.db")
@@ -60,7 +60,7 @@ func TestNew_NoEngramURL_OfflineMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error for offline-only config: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if client == nil {
 		t.Fatal("New() returned nil client for offline-only config")
@@ -113,7 +113,7 @@ func TestClient_ConcurrentAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	const numGoroutines = 10
@@ -168,7 +168,7 @@ func TestRecord_ValidInputs_ReturnsLoreWithDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	content := "Always use context.Context as the first parameter"
 	category := recall.CategoryPatternOutcome
@@ -216,7 +216,7 @@ func TestRecord_WithContextAndConfidence_StoresAllValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	content := "Interface segregation improves testability"
 	category := recall.CategoryInterfaceLesson
@@ -256,7 +256,7 @@ func TestRecord_ContentExceedsLimit_ReturnsValidationError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// 4001 characters exceeds limit
 	longContent := string(make([]byte, 4001))
@@ -286,7 +286,7 @@ func TestRecord_ContentExactlyAtLimit_Succeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	exactContent := strings.Repeat("x", 4000)
 
@@ -310,7 +310,7 @@ func TestRecord_ContextExceedsLimit_ReturnsValidationError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	longContext := strings.Repeat("y", 1001)
 
@@ -337,7 +337,7 @@ func TestRecord_ContextExactlyAtLimit_Succeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	exactContext := strings.Repeat("y", 1000)
 
@@ -363,7 +363,7 @@ func TestRecord_InvalidCategory_ReturnsValidationError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	invalidCategory := recall.Category("INVALID_CATEGORY")
 
@@ -401,7 +401,7 @@ func TestRecord_ConfidenceOutOfRange_ReturnsValidationError(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New() returned error: %v", err)
 			}
-			defer client.Close()
+			defer func() { _ = client.Close() }()
 
 			_, err = client.Record("Valid content", recall.CategoryArchitecturalDecision,
 				recall.WithConfidence(tt.confidence),
@@ -438,7 +438,7 @@ func TestRecord_ConfidenceBoundaries_Succeed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New() returned error: %v", err)
 			}
-			defer client.Close()
+			defer func() { _ = client.Close() }()
 
 			lore, err := client.Record("Valid content", recall.CategoryArchitecturalDecision,
 				recall.WithConfidence(tt.confidence),
@@ -463,7 +463,7 @@ func TestRecord_EmptyContent_ReturnsValidationError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err = client.Record("", recall.CategoryArchitecturalDecision)
 
@@ -502,7 +502,7 @@ func newQueryTestHelper(t *testing.T) *queryTestHelper {
 	// Create client using the same DB
 	client, err := recall.New(recall.Config{LocalPath: dbPath})
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		t.Fatalf("New() returned error: %v", err)
 	}
 
@@ -514,8 +514,8 @@ func newQueryTestHelper(t *testing.T) *queryTestHelper {
 }
 
 func (h *queryTestHelper) close() {
-	h.client.Close() // closes client's internal store
-	h.store.Close()  // closes our separate store used for test setup
+	_ = h.client.Close() // closes client's internal store
+	_ = h.store.Close()  // closes our separate store used for test setup
 }
 
 // insertLoreWithEmbedding inserts a lore entry with the given embedding vector.
@@ -967,7 +967,7 @@ func newFeedbackTestHelper(t *testing.T) *feedbackTestHelper {
 	// Create client using the same DB
 	client, err := recall.New(recall.Config{LocalPath: dbPath})
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		t.Fatalf("New() returned error: %v", err)
 	}
 
@@ -979,8 +979,8 @@ func newFeedbackTestHelper(t *testing.T) *feedbackTestHelper {
 }
 
 func (h *feedbackTestHelper) close() {
-	h.client.Close()
-	h.store.Close()
+	_ = h.client.Close()
+	_ = h.store.Close()
 }
 
 // insertLoreWithConfidence inserts a lore entry with a specific confidence.
@@ -1312,7 +1312,7 @@ func TestFeedback_CreatesSyncQueueEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Record lore (this also creates a sync entry)
 	lore, err := client.Record("Test content", recall.CategoryPatternOutcome)
@@ -1354,7 +1354,7 @@ func TestFeedback_MultipleFeedbacksQueuedOffline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Record lore
 	lore, err := client.Record("Test content", recall.CategoryPatternOutcome)
@@ -1417,14 +1417,14 @@ func TestFeedback_SyncQueuePersistsAcrossRestart(t *testing.T) {
 	}
 
 	// Close client
-	client1.Close()
+	_ = client1.Close()
 
 	// Reopen client with same DB
 	client2, err := recall.New(recall.Config{LocalPath: dbPath})
 	if err != nil {
 		t.Fatalf("New() returned error on reopen: %v", err)
 	}
-	defer client2.Close()
+	defer func() { _ = client2.Close() }()
 
 	// Verify pending sync count preserved
 	statsAfter, err := client2.Stats()
@@ -1454,7 +1454,7 @@ func TestClient_Bootstrap_OfflineMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Bootstrap should return ErrOffline
 	err = client.Bootstrap(context.Background())

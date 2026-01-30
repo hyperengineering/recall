@@ -8,12 +8,17 @@
       "version": "1.23"
     }
   },
+  "remoteEnv": {
+    "GOPATH": "/workspaces/recall/.gopath",
+    "GOCACHE": "/workspaces/recall/.gocache"
+  },
   "customizations": {
     "vscode": {
       "extensions": ["golang.go"],
       "settings": {
         "go.useLanguageServer": true,
-        "go.lintTool": "golangci-lint"
+        "go.lintTool": "golangci-lint",
+        "go.gopath": "/workspaces/recall/.gopath"
       }
     }
   },

@@ -3,6 +3,12 @@ set -e
 
 echo "=== Setting up Recall development environment ==="
 
+# Create Go directories in workspace (avoids /go permission issues)
+mkdir -p /workspaces/recall/.gopath
+mkdir -p /workspaces/recall/.gocache
+export GOPATH=/workspaces/recall/.gopath
+export GOCACHE=/workspaces/recall/.gocache
+
 # Install GitHub CLI
 if ! command -v gh &> /dev/null; then
     echo "Installing GitHub CLI..."

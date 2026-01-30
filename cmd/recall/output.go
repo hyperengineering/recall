@@ -31,18 +31,12 @@ func outputAsJSON(cmd *cobra.Command, v interface{}) error {
 func outputLoreHuman(cmd *cobra.Command, lore *recall.Lore) error {
 	out := cmd.OutOrStdout()
 	printSuccess(out, "Recorded: %s", lore.ID)
-	fmt.Fprintf(out, "  Category: %s\n", lore.Category)
-	fmt.Fprintf(out, "  Confidence: %.2f\n", lore.Confidence)
+	_, _ = fmt.Fprintf(out, "  Category: %s\n", lore.Category)
+	_, _ = fmt.Fprintf(out, "  Confidence: %.2f\n", lore.Confidence)
 	if lore.Context != "" {
-		fmt.Fprintf(out, "  Context: %s\n", lore.Context)
+		_, _ = fmt.Fprintf(out, "  Context: %s\n", lore.Context)
 	}
 	return nil
-}
-
-// outputText prints text to the command's stdout.
-func outputText(cmd *cobra.Command, format string, args ...interface{}) {
-	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, format, args...)
 }
 
 // outputError prints an error to stderr, ensuring no API keys are leaked.
@@ -79,19 +73,19 @@ func outputQueryResultHuman(cmd *cobra.Command, result *recall.QueryResult) erro
 	}
 
 	printInfo(out, "Found %d matching entries:", len(result.Lore))
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 
 	for i, lore := range result.Lore {
 		ref := findRefForID(result.SessionRefs, lore.ID)
 
 		// Header with ref and metadata
 		if isTTY() {
-			fmt.Fprintf(out, "%s %s %s\n",
+			_, _ = fmt.Fprintf(out, "%s %s %s\n",
 				labelStyle.Render(fmt.Sprintf("[%s]", ref)),
 				lore.Category,
 				mutedStyle.Render(fmt.Sprintf("(confidence: %.2f, validated: %d)", lore.Confidence, lore.ValidationCount)))
 		} else {
-			fmt.Fprintf(out, "[%s] %s (confidence: %.2f, validated: %d times)\n",
+			_, _ = fmt.Fprintf(out, "[%s] %s (confidence: %.2f, validated: %d times)\n",
 				ref, lore.Category, lore.Confidence, lore.ValidationCount)
 		}
 
@@ -101,18 +95,18 @@ func outputQueryResultHuman(cmd *cobra.Command, result *recall.QueryResult) erro
 		// Indent each line, preserving empty lines within content
 		lines := strings.Split(content, "\n")
 		for _, line := range lines {
-			fmt.Fprintf(out, "    %s\n", line)
+			_, _ = fmt.Fprintf(out, "    %s\n", line)
 		}
 
 		if lore.Context != "" {
 			if isTTY() {
-				fmt.Fprintf(out, "    %s\n", mutedStyle.Render("Context: "+lore.Context))
+				_, _ = fmt.Fprintf(out, "    %s\n", mutedStyle.Render("Context: "+lore.Context))
 			} else {
-				fmt.Fprintf(out, "    Context: %s\n", lore.Context)
+				_, _ = fmt.Fprintf(out, "    Context: %s\n", lore.Context)
 			}
 		}
 		if i < len(result.Lore)-1 {
-			fmt.Fprintln(out)
+			_, _ = fmt.Fprintln(out)
 		}
 	}
 
@@ -144,9 +138,9 @@ func outputFeedbackSingle(cmd *cobra.Command, ref string, lore *recall.Lore) err
 
 	out := cmd.OutOrStdout()
 	printSuccess(out, "Feedback applied to %s", ref)
-	fmt.Fprintf(out, "  ID: %s\n", lore.ID)
-	fmt.Fprintf(out, "  Confidence: %.2f\n", lore.Confidence)
-	fmt.Fprintf(out, "  Validation count: %d\n", lore.ValidationCount)
+	_, _ = fmt.Fprintf(out, "  ID: %s\n", lore.ID)
+	_, _ = fmt.Fprintf(out, "  Confidence: %.2f\n", lore.Confidence)
+	_, _ = fmt.Fprintf(out, "  Validation count: %d\n", lore.ValidationCount)
 	return nil
 }
 
@@ -175,7 +169,7 @@ func outputFeedbackBatch(cmd *cobra.Command, result *recall.FeedbackResult) erro
 		if len(idShort) > 8 {
 			idShort = idShort[:8]
 		}
-		fmt.Fprintf(out, "  %s: %.2f %s %.2f (validated: %d)\n",
+		_, _ = fmt.Fprintf(out, "  %s: %.2f %s %.2f (validated: %d)\n",
 			idShort, update.Previous, direction, update.Current, update.ValidationCount)
 	}
 	return nil
@@ -210,7 +204,7 @@ func outputSyncPush(cmd *cobra.Command, before, after *recall.StoreStats, durati
 	out := cmd.OutOrStdout()
 	printSuccess(out, "Push complete (took %s)", duration.Round(time.Millisecond))
 	if pushed > 0 {
-		fmt.Fprintf(out, "  Pushed %d entries\n", pushed)
+		_, _ = fmt.Fprintf(out, "  Pushed %d entries\n", pushed)
 	}
 	if after != nil && after.PendingSync > 0 {
 		printWarning(out, "Remaining in queue: %d", after.PendingSync)
@@ -240,7 +234,7 @@ func outputSyncBootstrap(cmd *cobra.Command, stats *recall.StoreStats, duration 
 	out := cmd.OutOrStdout()
 	printSuccess(out, "Bootstrap complete (took %s)", duration.Round(time.Millisecond))
 	if stats != nil {
-		fmt.Fprintf(out, "  Local lore count: %d\n", stats.LoreCount)
+		_, _ = fmt.Fprintf(out, "  Local lore count: %d\n", stats.LoreCount)
 	}
 	return nil
 }
@@ -260,11 +254,11 @@ func outputSessionLore(cmd *cobra.Command, lore []recall.SessionLore) error {
 	}
 
 	printInfo(out, "Session lore (%d entries):", len(lore))
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 	for _, l := range lore {
-		fmt.Fprintf(out, "[%s] %s (confidence: %.2f)\n", l.SessionRef, l.Category, l.Confidence)
-		fmt.Fprintf(out, "    %s\n", l.Content)
-		fmt.Fprintf(out, "    ID: %s\n\n", l.ID)
+		_, _ = fmt.Fprintf(out, "[%s] %s (confidence: %.2f)\n", l.SessionRef, l.Category, l.Confidence)
+		_, _ = fmt.Fprintf(out, "    %s\n", l.Content)
+		_, _ = fmt.Fprintf(out, "    ID: %s\n\n", l.ID)
 	}
 	return nil
 }

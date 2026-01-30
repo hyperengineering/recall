@@ -439,7 +439,7 @@ func (c *Client) Close() error {
 	if c.syncer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		c.syncer.Flush(ctx)
+		_ = c.syncer.Flush(ctx)
 	}
 
 	return c.store.Close()
@@ -457,7 +457,7 @@ func (c *Client) backgroundSync() {
 			return
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			c.syncer.Sync(ctx)
+			_ = c.syncer.Sync(ctx)
 			cancel()
 		}
 	}

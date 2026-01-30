@@ -71,7 +71,7 @@ func runSyncPush(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("initialize client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -111,7 +111,7 @@ func runSyncBootstrap(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("initialize client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()

@@ -23,7 +23,7 @@ func TestServer_NewServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 	if server == nil {
@@ -40,7 +40,7 @@ func TestServer_ToolsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 	tools := server.ListTools()
@@ -75,7 +75,7 @@ func TestTool_Query_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Record some lore first
 	_, err = client.Record("Error handling patterns in Go", recall.CategoryPatternOutcome)
@@ -111,7 +111,7 @@ func TestTool_Query_NoResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -141,7 +141,7 @@ func TestTool_Query_MissingParam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -165,7 +165,7 @@ func TestTool_Record_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -204,7 +204,7 @@ func TestTool_Record_InvalidCategory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -231,7 +231,7 @@ func TestTool_Feedback_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Record lore first
 	_, err = client.Record("Test lore for feedback", recall.CategoryPatternOutcome)
@@ -272,7 +272,7 @@ func TestTool_Feedback_InvalidRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -300,7 +300,7 @@ func TestTool_Sync_Offline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -328,7 +328,7 @@ func TestIntegration_QueryThenFeedback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -373,7 +373,7 @@ func TestIntegration_RecordThenQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -409,7 +409,7 @@ func TestIntegration_MultipleQueries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -460,7 +460,7 @@ func TestProtocol_Initialize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -527,7 +527,7 @@ func TestProtocol_InvalidMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 
@@ -577,7 +577,7 @@ func TestProtocol_MalformedJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall.New() returned error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := recallmcp.NewServer(client)
 

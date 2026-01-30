@@ -51,10 +51,10 @@ func runVersion(cmd *cobra.Command, args []string) error {
 		return enc.Encode(info)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "recall %s\n", info.Version)
-	fmt.Fprintf(cmd.OutOrStdout(), "  commit: %s\n", info.Commit)
-	fmt.Fprintf(cmd.OutOrStdout(), "  built:  %s\n", info.Date)
-	fmt.Fprintf(cmd.OutOrStdout(), "  go:     %s\n", info.Go)
-	fmt.Fprintf(cmd.OutOrStdout(), "  os:     %s/%s\n", info.OS, info.Arch)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "recall %s\n", info.Version)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  commit: %s\n", info.Commit)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  built:  %s\n", info.Date)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  go:     %s\n", info.Go)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  os:     %s/%s\n", info.OS, info.Arch)
 	return nil
 }

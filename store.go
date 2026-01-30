@@ -42,13 +42,13 @@ func NewStore(path string) (*Store, error) {
 
 	// Enable WAL mode for better concurrent access
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("enable WAL mode: %w", err)
 	}
 
 	store := &Store{db: db, path: path}
 	if err := store.migrate(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
 
@@ -86,7 +86,7 @@ func (s *Store) InsertLore(lore *Lore) error {
 	if err != nil {
 		return fmt.Errorf("store: begin transaction: %w", err)
 	}
-	defer tx.Rollback() // no-op if committed
+	defer func() { _ = tx.Rollback() }() // no-op if committed
 
 	var embeddingBlob []byte
 	if len(lore.Embedding) > 0 {
@@ -294,7 +294,7 @@ func (s *Store) queryLore(params QueryParams, requireEmbedding bool) ([]Lore, er
 	if err != nil {
 		return nil, fmt.Errorf("query lore: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []Lore
 	for rows.Next() {
@@ -339,7 +339,7 @@ func (s *Store) ApplyFeedback(loreID string, delta float64, isHelpful bool) (*Lo
 	if err != nil {
 		return nil, fmt.Errorf("store: begin transaction: %w", err)
 	}
-	defer tx.Rollback() // no-op if committed
+	defer func() { _ = tx.Rollback() }() // no-op if committed
 
 	// Calculate new confidence with clamping
 	newConfidence := lore.Confidence + delta
@@ -530,7 +530,7 @@ func (s *Store) Unsynced() ([]Lore, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []Lore
 	for rows.Next() {
@@ -589,7 +589,7 @@ func (s *Store) Stats() (*StoreStats, error) {
 	}
 
 	var lastSyncStr sql.NullString
-	s.db.QueryRow("SELECT value FROM metadata WHERE key = 'last_sync'").Scan(&lastSyncStr)
+	_ = s.db.QueryRow("SELECT value FROM metadata WHERE key = 'last_sync'").Scan(&lastSyncStr)
 
 	var lastSync time.Time
 	if lastSyncStr.Valid {
@@ -665,20 +665,20 @@ func (s *Store) ReplaceFromSnapshot(r io.Reader) error {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if _, err := io.Copy(tmpFile, r); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("write snapshot: %w", err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	// 2. Open snapshot database
 	snapshotDB, err := sql.Open("sqlite", tmpPath)
 	if err != nil {
 		return fmt.Errorf("open snapshot: %w", err)
 	}
-	defer snapshotDB.Close()
+	defer func() { _ = snapshotDB.Close() }()
 
 	// 3. Read all lore from snapshot (Engram snapshots don't have synced_at column)
 	// Note: synced_at is Recall-only and won't be present in Engram snapshots
@@ -691,7 +691,7 @@ func (s *Store) ReplaceFromSnapshot(r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("read snapshot: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var loreEntries []Lore
 	for rows.Next() {
@@ -1020,7 +1020,7 @@ func (s *Store) PendingSyncEntries() ([]SyncQueueEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query sync queue: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []SyncQueueEntry
 	for rows.Next() {
@@ -1060,7 +1060,7 @@ func (s *Store) CompleteSyncEntries(queueIDs []int64, loreIDs []string) error {
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1158,7 +1158,7 @@ func (s *Store) GetLoreByIDs(ids []string) ([]Lore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query lore: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []Lore
 	for rows.Next() {

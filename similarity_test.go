@@ -155,9 +155,8 @@ func TestSearcher_InterfaceExists(t *testing.T) {
 
 func TestBruteForceSearcher_CanBeInstantiated(t *testing.T) {
 	searcher := &BruteForceSearcher{}
-	if searcher == nil {
-		t.Error("BruteForceSearcher should be instantiatable")
-	}
+	// Verify it's not nil by using it
+	_ = searcher.Search(nil, nil, 0)
 }
 
 // =============================================================================

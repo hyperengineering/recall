@@ -31,8 +31,8 @@ func init() {
 	recordCmd.Flags().StringVar(&recordContext, "context", "", "Additional context (story, epic, situation)")
 	recordCmd.Flags().Float64Var(&recordConfidence, "confidence", 0.5, "Initial confidence (0.0-1.0)")
 
-	recordCmd.MarkFlagRequired("content")
-	recordCmd.MarkFlagRequired("category")
+	_ = recordCmd.MarkFlagRequired("content")
+	_ = recordCmd.MarkFlagRequired("category")
 }
 
 func runRecord(cmd *cobra.Command, args []string) error {
@@ -45,7 +45,7 @@ func runRecord(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("initialize client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Build options
 	var opts []recall.RecordOption

@@ -30,7 +30,7 @@ learned insights across sessions and environments.`,
 			fmt.Println(renderBannerWithTagline())
 			fmt.Println()
 		}
-		cmd.Help()
+		_ = cmd.Help()
 	},
 	SilenceErrors: true, // We handle error output with styled messages
 	SilenceUsage:  true, // Prevent usage dump on error - we show styled errors only

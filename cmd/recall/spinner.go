@@ -40,7 +40,7 @@ func newSimpleSpinner(w io.Writer, message string) *simpleSpinner {
 
 func (s *simpleSpinner) Start() {
 	if !isTTY() {
-		fmt.Fprintf(s.w, "%s...\n", s.message)
+		_, _ = fmt.Fprintf(s.w, "%s...\n", s.message)
 		return
 	}
 
@@ -48,7 +48,7 @@ func (s *simpleSpinner) Start() {
 		spinnerStyle := lipgloss.NewStyle().Foreground(colorPrimary)
 		for !s.done.Load() {
 			frame := s.frames[s.current%len(s.frames)]
-			fmt.Fprintf(s.w, "\r%s %s", spinnerStyle.Render(frame), s.message)
+			_, _ = fmt.Fprintf(s.w, "\r%s %s", spinnerStyle.Render(frame), s.message)
 			s.current++
 			time.Sleep(spinnerAnimDelay)
 		}
@@ -60,7 +60,7 @@ func (s *simpleSpinner) Stop() {
 	if isTTY() {
 		// Clear the spinner line using calculated length plus safety margin
 		clearStr := "\r" + strings.Repeat(" ", s.clearLen+spinnerClearPad) + "\r"
-		fmt.Fprint(s.w, clearStr)
+		_, _ = fmt.Fprint(s.w, clearStr)
 	}
 }
 

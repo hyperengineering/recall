@@ -75,7 +75,7 @@ func runFeedback(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("initialize client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if singleMode {
 		return runFeedbackSingle(cmd, client)

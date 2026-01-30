@@ -73,14 +73,14 @@ func TestConfigFromEnv_ReadsVars(t *testing.T) {
 	originals := make(map[string]string)
 	for k, v := range envVars {
 		originals[k] = os.Getenv(k)
-		os.Setenv(k, v)
+		_ = os.Setenv(k, v)
 	}
 	defer func() {
 		for k, v := range originals {
 			if v == "" {
-				os.Unsetenv(k)
+				_ = os.Unsetenv(k)
 			} else {
-				os.Setenv(k, v)
+				_ = os.Setenv(k, v)
 			}
 		}
 	}()
@@ -107,14 +107,14 @@ func TestConfigFromEnv_UnsetVarsDefaultToEmpty(t *testing.T) {
 	originals := make(map[string]string)
 	for _, k := range vars {
 		originals[k] = os.Getenv(k)
-		os.Unsetenv(k)
+		_ = os.Unsetenv(k)
 	}
 	defer func() {
 		for k, v := range originals {
 			if v == "" {
-				os.Unsetenv(k)
+				_ = os.Unsetenv(k)
 			} else {
-				os.Setenv(k, v)
+				_ = os.Setenv(k, v)
 			}
 		}
 	}()

@@ -79,7 +79,7 @@ func (s *Syncer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("bootstrap: download: %w", err)
 	}
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 
 	// 4. Replace local store (atomic)
 	if err := s.store.ReplaceFromSnapshot(snapshot); err != nil {

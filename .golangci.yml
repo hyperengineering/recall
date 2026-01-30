@@ -1,0 +1,12 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - staticcheck
+    - unused
+  exclusions:
+    paths:
+      - ".*_test\\.go"
+      - "examples/"

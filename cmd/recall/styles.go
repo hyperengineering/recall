@@ -34,9 +34,8 @@ var (
 	errorStyle   = lipgloss.NewStyle().Foreground(colorError).Bold(true)
 	warningStyle = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	infoStyle    = lipgloss.NewStyle().Foreground(colorPrimary) // Uses brand color
-	mutedStyle   = lipgloss.NewStyle().Foreground(colorMuted)
-	labelStyle   = lipgloss.NewStyle().Foreground(colorPrimaryLight).Bold(true)
-	valueStyle   = lipgloss.NewStyle().Foreground(colorText)
+	mutedStyle = lipgloss.NewStyle().Foreground(colorMuted)
+	labelStyle = lipgloss.NewStyle().Foreground(colorPrimaryLight).Bold(true)
 )
 
 // Icons
@@ -56,9 +55,9 @@ func isTTY() bool {
 func printStyled(w io.Writer, icon string, style lipgloss.Style, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	if isTTY() {
-		fmt.Fprintf(w, "%s %s\n", style.Render(icon), msg)
+		_, _ = fmt.Fprintf(w, "%s %s\n", style.Render(icon), msg)
 	} else {
-		fmt.Fprintf(w, "%s %s\n", icon, msg)
+		_, _ = fmt.Fprintf(w, "%s %s\n", icon, msg)
 	}
 }
 
@@ -86,18 +85,9 @@ func printInfo(w io.Writer, format string, args ...interface{}) {
 func printMuted(w io.Writer, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	if isTTY() {
-		fmt.Fprintln(w, mutedStyle.Render(msg))
+		_, _ = fmt.Fprintln(w, mutedStyle.Render(msg))
 	} else {
-		fmt.Fprintln(w, msg)
-	}
-}
-
-// printLabel prints a styled label
-func printLabel(w io.Writer, label string) {
-	if isTTY() {
-		fmt.Fprint(w, labelStyle.Render(label))
-	} else {
-		fmt.Fprint(w, label)
+		_, _ = fmt.Fprintln(w, msg)
 	}
 }
 
