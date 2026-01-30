@@ -539,7 +539,32 @@ Or accept offline-only mode — local operations (record, query, feedback) work 
 
 ## MCP Integration
 
-Recall provides optional MCP (Model Context Protocol) adapters for integration with AI agent frameworks:
+Recall provides MCP (Model Context Protocol) tools for integration with AI coding agents like Claude Code.
+
+**Available tools:**
+- `recall_query` - Retrieve relevant lore based on semantic similarity
+- `recall_record` - Capture new lore with content, category, and optional context
+- `recall_feedback` - Provide feedback (helpful/incorrect/not_relevant) on recalled lore
+
+**Quick setup for coding agents:**
+
+```bash
+# Set environment variables
+export RECALL_DB_PATH="$HOME/.recall/lore.db"
+export RECALL_SOURCE_ID="claude-code"
+
+# Query for relevant context before starting work
+recall query "implementing message queue consumer" --json
+
+# Record insights during implementation
+recall record --content "Queue consumers benefit from idempotency checks" \
+  --category PATTERN_OUTCOME --context "story-3.1" --json
+
+# Provide feedback on recalled lore
+recall feedback --helpful L1,L3 --not-relevant L2
+```
+
+**Go library integration:**
 
 ```go
 import (
@@ -548,16 +573,10 @@ import (
 )
 
 client, _ := recall.New(cfg)
-
-// Register tools with your MCP-compatible registry
-// The registry must implement recallmcp.Registry interface
 recallmcp.RegisterTools(mcpRegistry, client)
 ```
 
-Available tools:
-- `recall_query` - Retrieve relevant lore based on semantic similarity
-- `recall_record` - Capture new lore with content, category, and optional context
-- `recall_feedback` - Provide feedback (helpful/incorrect/not_relevant) on recalled lore
+See [docs/mcp-integration.md](docs/mcp-integration.md) for comprehensive configuration and usage patterns.
 
 ## Development
 
