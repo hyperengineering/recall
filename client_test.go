@@ -1225,9 +1225,9 @@ func TestFeedback_HelpfulIncrementsValidationCount(t *testing.T) {
 	}
 }
 
-// TestFeedback_HelpfulSetsLastValidated tests AC #1:
+// TestFeedback_HelpfulSetsLastValidatedAt tests AC #1:
 // Helpful feedback sets last_validated timestamp.
-func TestFeedback_HelpfulSetsLastValidated(t *testing.T) {
+func TestFeedback_HelpfulSetsLastValidatedAt(t *testing.T) {
 	h := newFeedbackTestHelper(t)
 	defer h.close()
 
@@ -1241,8 +1241,8 @@ func TestFeedback_HelpfulSetsLastValidated(t *testing.T) {
 	}
 
 	// Verify last_validated is set
-	if updated.LastValidated == nil {
-		t.Error("LastValidated is nil, want non-nil timestamp")
+	if updated.LastValidatedAt == nil {
+		t.Error("LastValidatedAt is nil, want non-nil timestamp")
 	}
 }
 
@@ -1266,8 +1266,8 @@ func TestFeedback_IncorrectLeavesValidationUnchanged(t *testing.T) {
 		t.Errorf("ValidationCount = %d, want 0 (unchanged)", updated.ValidationCount)
 	}
 	// Verify last_validated still nil
-	if updated.LastValidated != nil {
-		t.Error("LastValidated should be nil for incorrect feedback")
+	if updated.LastValidatedAt != nil {
+		t.Error("LastValidatedAt should be nil for incorrect feedback")
 	}
 }
 

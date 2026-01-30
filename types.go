@@ -4,18 +4,20 @@ import "time"
 
 // Lore represents a single piece of experiential knowledge.
 type Lore struct {
-	ID              string    `json:"id"`
-	Content         string    `json:"content"`
-	Category        Category  `json:"category"`
-	Context         string    `json:"context,omitempty"`
-	Confidence      float64   `json:"confidence"`
-	Embedding       []byte    `json:"-"`
-	ValidationCount int       `json:"validation_count"`
-	LastValidated   *time.Time `json:"last_validated,omitempty"`
-	SourceID        string    `json:"source_id"`
-	Sources         []string  `json:"sources,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              string     `json:"id"`
+	Content         string     `json:"content"`
+	Category        Category   `json:"category"`
+	Context         string     `json:"context,omitempty"`
+	Confidence      float64    `json:"confidence"`
+	Embedding       []byte     `json:"-"`
+	EmbeddingStatus string     `json:"embedding_status"`
+	ValidationCount int        `json:"validation_count"`
+	LastValidatedAt *time.Time `json:"last_validated_at,omitempty"`
+	SourceID        string     `json:"source_id"`
+	Sources         []string   `json:"sources,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
 	SyncedAt        *time.Time `json:"synced_at,omitempty"`
 }
 

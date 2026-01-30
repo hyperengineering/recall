@@ -16,7 +16,7 @@ func TestNewStore_CreatesAllTables(t *testing.T) {
 	}
 	defer store.Close()
 
-	tables := []string{"lore", "metadata", "sync_queue"}
+	tables := []string{"lore_entries", "metadata", "sync_queue"}
 	for _, table := range tables {
 		var name string
 		err := store.db.QueryRow(
@@ -58,11 +58,12 @@ func TestNewStore_CreatesIndexes(t *testing.T) {
 	defer store.Close()
 
 	expectedIndexes := []string{
-		"idx_lore_category",
-		"idx_lore_confidence",
-		"idx_lore_created_at",
-		"idx_lore_synced_at",
-		"idx_lore_last_validated",
+		"idx_lore_entries_category",
+		"idx_lore_entries_confidence",
+		"idx_lore_entries_created_at",
+		"idx_lore_entries_synced_at",
+		"idx_lore_entries_last_validated_at",
+		"idx_lore_entries_deleted_at",
 	}
 
 	for _, idx := range expectedIndexes {
@@ -119,13 +120,13 @@ func TestNewStore_Idempotent(t *testing.T) {
 	// Verify tables still exist (no duplicates, no errors)
 	var count int
 	err = store2.db.QueryRow(
-		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lore'",
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lore_entries'",
 	).Scan(&count)
 	if err != nil {
-		t.Fatalf("failed to count lore tables: %v", err)
+		t.Fatalf("failed to count lore_entries tables: %v", err)
 	}
 	if count != 1 {
-		t.Errorf("expected exactly 1 lore table, got %d", count)
+		t.Errorf("expected exactly 1 lore_entries table, got %d", count)
 	}
 }
 
@@ -211,9 +212,9 @@ func TestInsertLore_Atomicity_BothEntriesExist(t *testing.T) {
 
 	// Verify lore entry exists
 	var loreCount int
-	err = store.db.QueryRow("SELECT COUNT(*) FROM lore WHERE id = ?", lore.ID).Scan(&loreCount)
+	err = store.db.QueryRow("SELECT COUNT(*) FROM lore_entries WHERE id = ?", lore.ID).Scan(&loreCount)
 	if err != nil {
-		t.Fatalf("failed to query lore: %v", err)
+		t.Fatalf("failed to query lore_entries: %v", err)
 	}
 	if loreCount != 1 {
 		t.Errorf("lore count = %d, want 1", loreCount)
@@ -264,7 +265,7 @@ func TestInsertLore_Atomicity_RollbackOnDuplicate(t *testing.T) {
 
 	// Count entries before duplicate attempt
 	var loreBefore, syncBefore int
-	store.db.QueryRow("SELECT COUNT(*) FROM lore").Scan(&loreBefore)
+	store.db.QueryRow("SELECT COUNT(*) FROM lore_entries").Scan(&loreBefore)
 	store.db.QueryRow("SELECT COUNT(*) FROM sync_queue").Scan(&syncBefore)
 
 	// Second insert with same ID should fail
@@ -283,7 +284,7 @@ func TestInsertLore_Atomicity_RollbackOnDuplicate(t *testing.T) {
 
 	// Count entries after duplicate attempt
 	var loreAfter, syncAfter int
-	store.db.QueryRow("SELECT COUNT(*) FROM lore").Scan(&loreAfter)
+	store.db.QueryRow("SELECT COUNT(*) FROM lore_entries").Scan(&loreAfter)
 	store.db.QueryRow("SELECT COUNT(*) FROM sync_queue").Scan(&syncAfter)
 
 	// Verify counts haven't changed (rollback worked)
@@ -363,7 +364,7 @@ func TestStore_ApplyFeedback_HelpfulSetsLastValidated(t *testing.T) {
 	}
 
 	// Verify last_validated is set
-	if updated.LastValidated == nil {
+	if updated.LastValidatedAt == nil {
 		t.Error("LastValidated is nil, want non-nil timestamp")
 	}
 }
@@ -402,7 +403,7 @@ func TestStore_ApplyFeedback_IncorrectNoValidationChange(t *testing.T) {
 		t.Errorf("ValidationCount = %d, want 5 (unchanged)", updated.ValidationCount)
 	}
 	// Verify last_validated still nil
-	if updated.LastValidated != nil {
+	if updated.LastValidatedAt != nil {
 		t.Error("LastValidated should remain nil for incorrect feedback")
 	}
 }
@@ -614,7 +615,7 @@ func TestStore_ApplyFeedback_RollbackOnUpdateFailure(t *testing.T) {
 	var initialConfidence float64
 	var initialValidationCount int
 	err = store.db.QueryRow(
-		"SELECT confidence, validation_count FROM lore WHERE id = ?",
+		"SELECT confidence, validation_count FROM lore_entries WHERE id = ?",
 		lore.ID,
 	).Scan(&initialConfidence, &initialValidationCount)
 	if err != nil {
@@ -645,7 +646,7 @@ func TestStore_ApplyFeedback_RollbackOnUpdateFailure(t *testing.T) {
 	var currentConfidence float64
 	var currentValidationCount int
 	err = store.db.QueryRow(
-		"SELECT confidence, validation_count FROM lore WHERE id = ?",
+		"SELECT confidence, validation_count FROM lore_entries WHERE id = ?",
 		lore.ID,
 	).Scan(&currentConfidence, &currentValidationCount)
 	if err != nil {
@@ -1009,7 +1010,7 @@ func TestStore_ReplaceFromSnapshot_EmptySnapshot(t *testing.T) {
 
 	// Verify all lore is deleted
 	var loreCount int
-	mainStore.db.QueryRow("SELECT COUNT(*) FROM lore").Scan(&loreCount)
+	mainStore.db.QueryRow("SELECT COUNT(*) FROM lore_entries").Scan(&loreCount)
 	if loreCount != 0 {
 		t.Errorf("lore count = %d, want 0", loreCount)
 	}
@@ -1292,7 +1293,7 @@ func TestStore_CompleteSyncEntries_UpdatesSyncedAt(t *testing.T) {
 
 	// Verify synced_at is NULL initially
 	var syncedAt *string
-	store.db.QueryRow("SELECT synced_at FROM lore WHERE id = ?", lore.ID).Scan(&syncedAt)
+	store.db.QueryRow("SELECT synced_at FROM lore_entries WHERE id = ?", lore.ID).Scan(&syncedAt)
 	if syncedAt != nil {
 		t.Error("synced_at should be NULL initially")
 	}
@@ -1308,7 +1309,7 @@ func TestStore_CompleteSyncEntries_UpdatesSyncedAt(t *testing.T) {
 	}
 
 	// Verify synced_at is now set
-	store.db.QueryRow("SELECT synced_at FROM lore WHERE id = ?", lore.ID).Scan(&syncedAt)
+	store.db.QueryRow("SELECT synced_at FROM lore_entries WHERE id = ?", lore.ID).Scan(&syncedAt)
 	if syncedAt == nil {
 		t.Error("synced_at should be set after completion")
 	}

@@ -1,25 +1,28 @@
 -- +goose Up
-CREATE TABLE IF NOT EXISTS lore (
+CREATE TABLE IF NOT EXISTS lore_entries (
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
     context TEXT,
     category TEXT NOT NULL,
-    confidence REAL NOT NULL DEFAULT 0.7,
+    confidence REAL NOT NULL DEFAULT 0.5,
     embedding BLOB,
+    embedding_status TEXT NOT NULL DEFAULT 'complete',
     source_id TEXT NOT NULL,
-    sources TEXT,
+    sources TEXT NOT NULL DEFAULT '[]',
     validation_count INTEGER NOT NULL DEFAULT 0,
-    last_validated TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    deleted_at TEXT,
+    last_validated_at TEXT,
     synced_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_lore_category ON lore(category);
-CREATE INDEX IF NOT EXISTS idx_lore_confidence ON lore(confidence);
-CREATE INDEX IF NOT EXISTS idx_lore_created_at ON lore(created_at);
-CREATE INDEX IF NOT EXISTS idx_lore_synced_at ON lore(synced_at);
-CREATE INDEX IF NOT EXISTS idx_lore_last_validated ON lore(last_validated);
+CREATE INDEX IF NOT EXISTS idx_lore_entries_category ON lore_entries(category);
+CREATE INDEX IF NOT EXISTS idx_lore_entries_confidence ON lore_entries(confidence);
+CREATE INDEX IF NOT EXISTS idx_lore_entries_created_at ON lore_entries(created_at);
+CREATE INDEX IF NOT EXISTS idx_lore_entries_synced_at ON lore_entries(synced_at);
+CREATE INDEX IF NOT EXISTS idx_lore_entries_last_validated_at ON lore_entries(last_validated_at);
+CREATE INDEX IF NOT EXISTS idx_lore_entries_deleted_at ON lore_entries(deleted_at);
 
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -42,9 +45,10 @@ CREATE INDEX IF NOT EXISTS idx_sync_queue_queued_at ON sync_queue(queued_at);
 DROP INDEX IF EXISTS idx_sync_queue_queued_at;
 DROP TABLE IF EXISTS sync_queue;
 DROP TABLE IF EXISTS metadata;
-DROP INDEX IF EXISTS idx_lore_last_validated;
-DROP INDEX IF EXISTS idx_lore_synced_at;
-DROP INDEX IF EXISTS idx_lore_created_at;
-DROP INDEX IF EXISTS idx_lore_confidence;
-DROP INDEX IF EXISTS idx_lore_category;
-DROP TABLE IF EXISTS lore;
+DROP INDEX IF EXISTS idx_lore_entries_deleted_at;
+DROP INDEX IF EXISTS idx_lore_entries_last_validated_at;
+DROP INDEX IF EXISTS idx_lore_entries_synced_at;
+DROP INDEX IF EXISTS idx_lore_entries_created_at;
+DROP INDEX IF EXISTS idx_lore_entries_confidence;
+DROP INDEX IF EXISTS idx_lore_entries_category;
+DROP TABLE IF EXISTS lore_entries;

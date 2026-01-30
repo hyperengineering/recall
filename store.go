@@ -93,16 +93,21 @@ func (s *Store) InsertLore(lore *Lore) error {
 		embeddingBlob = lore.Embedding
 	}
 
-	var sourcesStr *string
+	// sources defaults to "[]" to match Engram schema (NOT NULL DEFAULT '[]')
+	sourcesStr := "[]"
 	if len(lore.Sources) > 0 {
-		joined := strings.Join(lore.Sources, ",")
-		sourcesStr = &joined
+		sourcesStr = strings.Join(lore.Sources, ",")
 	}
 
 	// INSERT lore
+	// Set embedding_status to 'pending' for locally recorded lore (Recall doesn't generate embeddings)
+	embeddingStatus := "pending"
+	if lore.EmbeddingStatus != "" {
+		embeddingStatus = lore.EmbeddingStatus
+	}
 	_, err = tx.Exec(`
-		INSERT INTO lore (id, content, context, category, confidence, embedding, source_id, sources, validation_count, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO lore_entries (id, content, context, category, confidence, embedding, embedding_status, source_id, sources, validation_count, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		lore.ID,
 		lore.Content,
@@ -110,6 +115,7 @@ func (s *Store) InsertLore(lore *Lore) error {
 		string(lore.Category),
 		lore.Confidence,
 		embeddingBlob,
+		embeddingStatus,
 		lore.SourceID,
 		sourcesStr,
 		lore.ValidationCount,
@@ -176,15 +182,20 @@ func (s *Store) Record(lore Lore) (*Lore, error) {
 		embeddingBlob = lore.Embedding
 	}
 
-	var sourcesStr *string
+	// sources defaults to "[]" to match Engram schema (NOT NULL DEFAULT '[]')
+	sourcesStr := "[]"
 	if len(lore.Sources) > 0 {
-		joined := strings.Join(lore.Sources, ",")
-		sourcesStr = &joined
+		sourcesStr = strings.Join(lore.Sources, ",")
 	}
 
+	// Set embedding_status to 'pending' for locally recorded lore (Recall doesn't generate embeddings)
+	embeddingStatus := "pending"
+	if lore.EmbeddingStatus != "" {
+		embeddingStatus = lore.EmbeddingStatus
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO lore (id, content, context, category, confidence, embedding, source_id, sources, validation_count, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO lore_entries (id, content, context, category, confidence, embedding, embedding_status, source_id, sources, validation_count, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		lore.ID,
 		lore.Content,
@@ -192,6 +203,7 @@ func (s *Store) Record(lore Lore) (*Lore, error) {
 		string(lore.Category),
 		lore.Confidence,
 		embeddingBlob,
+		embeddingStatus,
 		lore.SourceID,
 		sourcesStr,
 		lore.ValidationCount,
@@ -224,9 +236,9 @@ func (s *Store) Get(id string) (*Lore, error) {
 
 func (s *Store) getLore(id string) (*Lore, error) {
 	row := s.db.QueryRow(`
-		SELECT id, content, context, category, confidence, embedding, source_id, sources,
-		       validation_count, last_validated, created_at, updated_at, synced_at
-		FROM lore WHERE id = ?
+		SELECT id, content, context, category, confidence, embedding, embedding_status, source_id, sources,
+		       validation_count, last_validated_at, created_at, updated_at, deleted_at, synced_at
+		FROM lore_entries WHERE id = ? AND deleted_at IS NULL
 	`, id)
 
 	return s.scanLore(row)
@@ -252,11 +264,11 @@ func (s *Store) queryLore(params QueryParams, requireEmbedding bool) ([]Lore, er
 		return nil, ErrStoreClosed
 	}
 
-	// Build query
+	// Build query - exclude soft-deleted records
 	query := `
-		SELECT id, content, context, category, confidence, embedding, source_id, sources,
-		       validation_count, last_validated, created_at, updated_at, synced_at
-		FROM lore WHERE 1=1
+		SELECT id, content, context, category, confidence, embedding, embedding_status, source_id, sources,
+		       validation_count, last_validated_at, created_at, updated_at, deleted_at, synced_at
+		FROM lore_entries WHERE deleted_at IS NULL
 	`
 	args := []any{}
 
@@ -344,19 +356,19 @@ func (s *Store) ApplyFeedback(loreID string, delta float64, isHelpful bool) (*Lo
 	// UPDATE lore (with or without validation metadata)
 	if isHelpful {
 		_, err = tx.Exec(`
-			UPDATE lore SET
+			UPDATE lore_entries SET
 				confidence = ?,
 				validation_count = validation_count + 1,
-				last_validated = ?,
+				last_validated_at = ?,
 				updated_at = ?
-			WHERE id = ?
+			WHERE id = ? AND deleted_at IS NULL
 		`, newConfidence, nowStr, nowStr, loreID)
 	} else {
 		_, err = tx.Exec(`
-			UPDATE lore SET
+			UPDATE lore_entries SET
 				confidence = ?,
 				updated_at = ?
-			WHERE id = ?
+			WHERE id = ? AND deleted_at IS NULL
 		`, newConfidence, nowStr, loreID)
 	}
 	if err != nil {
@@ -465,18 +477,18 @@ func (s *Store) adjustConfidence(id string, delta float64, incrementValidation b
 	}
 
 	validationCount := lore.ValidationCount
-	var lastValidated *string
+	var lastValidatedAt *string
 	if incrementValidation {
 		validationCount++
 		ts := now.Format(time.RFC3339)
-		lastValidated = &ts
+		lastValidatedAt = &ts
 	}
 
 	_, err = s.db.Exec(`
-		UPDATE lore
-		SET confidence = ?, validation_count = ?, last_validated = COALESCE(?, last_validated), updated_at = ?
-		WHERE id = ?
-	`, current, validationCount, lastValidated, now.Format(time.RFC3339), id)
+		UPDATE lore_entries
+		SET confidence = ?, validation_count = ?, last_validated_at = COALESCE(?, last_validated_at), updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+	`, current, validationCount, lastValidatedAt, now.Format(time.RFC3339), id)
 	if err != nil {
 		return nil, err
 	}
@@ -502,9 +514,9 @@ func (s *Store) Unsynced() ([]Lore, error) {
 	}
 
 	rows, err := s.db.Query(`
-		SELECT id, content, context, category, confidence, embedding, source_id, sources,
-		       validation_count, last_validated, created_at, updated_at, synced_at
-		FROM lore WHERE synced_at IS NULL
+		SELECT id, content, context, category, confidence, embedding, embedding_status, source_id, sources,
+		       validation_count, last_validated_at, created_at, updated_at, deleted_at, synced_at
+		FROM lore_entries WHERE synced_at IS NULL AND deleted_at IS NULL
 	`)
 	if err != nil {
 		return nil, err
@@ -543,7 +555,7 @@ func (s *Store) MarkSynced(ids []string, syncedAt time.Time) error {
 		args = append(args, id)
 	}
 
-	query := fmt.Sprintf(`UPDATE lore SET synced_at = ? WHERE id IN (%s)`, strings.Join(placeholders, ","))
+	query := fmt.Sprintf(`UPDATE lore_entries SET synced_at = ? WHERE id IN (%s)`, strings.Join(placeholders, ","))
 	_, err := s.db.Exec(query, args...)
 	return err
 }
@@ -558,7 +570,7 @@ func (s *Store) Stats() (*StoreStats, error) {
 	}
 
 	var count int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM lore").Scan(&count); err != nil {
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM lore_entries WHERE deleted_at IS NULL").Scan(&count); err != nil {
 		return nil, err
 	}
 
@@ -659,12 +671,13 @@ func (s *Store) ReplaceFromSnapshot(r io.Reader) error {
 	}
 	defer snapshotDB.Close()
 
-	// 3. Read all lore from snapshot
+	// 3. Read all lore from snapshot (Engram snapshots don't have synced_at column)
+	// Note: synced_at is Recall-only and won't be present in Engram snapshots
 	rows, err := snapshotDB.Query(`
-		SELECT id, content, context, category, confidence, embedding,
-		       source_id, sources, validation_count, last_validated,
-		       created_at, updated_at, synced_at
-		FROM lore
+		SELECT id, content, context, category, confidence, embedding, embedding_status,
+		       source_id, sources, validation_count, last_validated_at,
+		       created_at, updated_at, deleted_at
+		FROM lore_entries WHERE deleted_at IS NULL
 	`)
 	if err != nil {
 		return fmt.Errorf("read snapshot: %w", err)
@@ -673,7 +686,7 @@ func (s *Store) ReplaceFromSnapshot(r io.Reader) error {
 
 	var loreEntries []Lore
 	for rows.Next() {
-		lore, err := s.scanLoreRows(rows)
+		lore, err := s.scanSnapshotLoreRows(rows)
 		if err != nil {
 			return fmt.Errorf("scan snapshot row: %w", err)
 		}
@@ -691,7 +704,7 @@ func (s *Store) ReplaceFromSnapshot(r io.Reader) error {
 	defer func() { _ = tx.Rollback() }()
 
 	// Delete all existing lore
-	if _, err := tx.Exec("DELETE FROM lore"); err != nil {
+	if _, err := tx.Exec("DELETE FROM lore_entries"); err != nil {
 		return fmt.Errorf("delete existing lore: %w", err)
 	}
 
@@ -717,16 +730,22 @@ func (s *Store) insertLoreTx(tx *sql.Tx, lore *Lore) error {
 		embeddingBlob = lore.Embedding
 	}
 
-	var sourcesStr *string
+	// sources defaults to "[]" to match Engram schema (NOT NULL DEFAULT '[]')
+	sourcesStr := "[]"
 	if len(lore.Sources) > 0 {
-		joined := strings.Join(lore.Sources, ",")
-		sourcesStr = &joined
+		sourcesStr = strings.Join(lore.Sources, ",")
 	}
 
-	var lastValidatedStr *string
-	if lore.LastValidated != nil {
-		ts := lore.LastValidated.Format(time.RFC3339)
-		lastValidatedStr = &ts
+	var lastValidatedAtStr *string
+	if lore.LastValidatedAt != nil {
+		ts := lore.LastValidatedAt.Format(time.RFC3339)
+		lastValidatedAtStr = &ts
+	}
+
+	var deletedAtStr *string
+	if lore.DeletedAt != nil {
+		ts := lore.DeletedAt.Format(time.RFC3339)
+		deletedAtStr = &ts
 	}
 
 	var syncedAtStr *string
@@ -735,11 +754,17 @@ func (s *Store) insertLoreTx(tx *sql.Tx, lore *Lore) error {
 		syncedAtStr = &ts
 	}
 
+	// Default embedding_status to 'complete' for snapshot imports (they have embeddings)
+	embeddingStatus := lore.EmbeddingStatus
+	if embeddingStatus == "" {
+		embeddingStatus = "complete"
+	}
+
 	_, err := tx.Exec(`
-		INSERT INTO lore (id, content, context, category, confidence, embedding,
-		                 source_id, sources, validation_count, last_validated,
-		                 created_at, updated_at, synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO lore_entries (id, content, context, category, confidence, embedding, embedding_status,
+		                 source_id, sources, validation_count, last_validated_at,
+		                 created_at, updated_at, deleted_at, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		lore.ID,
 		lore.Content,
@@ -747,12 +772,14 @@ func (s *Store) insertLoreTx(tx *sql.Tx, lore *Lore) error {
 		string(lore.Category),
 		lore.Confidence,
 		embeddingBlob,
+		embeddingStatus,
 		lore.SourceID,
 		sourcesStr,
 		lore.ValidationCount,
-		lastValidatedStr,
+		lastValidatedAtStr,
 		lore.CreatedAt.Format(time.RFC3339),
 		lore.UpdatedAt.Format(time.RFC3339),
+		deletedAtStr,
 		syncedAtStr,
 	)
 	return err
@@ -788,15 +815,17 @@ type scanner interface {
 // Returns ErrNotFound only for sql.ErrNoRows from *sql.Row.
 func (s *Store) scanLoreFrom(sc scanner) (*Lore, error) {
 	var (
-		lore          Lore
-		context       sql.NullString
-		embeddingBlob []byte
-		sources       sql.NullString
-		lastValidated sql.NullString
-		syncedAt      sql.NullString
-		createdAt     string
-		updatedAt     string
-		category      string
+		lore            Lore
+		context         sql.NullString
+		embeddingBlob   []byte
+		embeddingStatus string
+		sources         sql.NullString
+		lastValidatedAt sql.NullString
+		deletedAt       sql.NullString
+		syncedAt        sql.NullString
+		createdAt       string
+		updatedAt       string
+		category        string
 	)
 
 	err := sc.Scan(
@@ -806,12 +835,14 @@ func (s *Store) scanLoreFrom(sc scanner) (*Lore, error) {
 		&category,
 		&lore.Confidence,
 		&embeddingBlob,
+		&embeddingStatus,
 		&lore.SourceID,
 		&sources,
 		&lore.ValidationCount,
-		&lastValidated,
+		&lastValidatedAt,
 		&createdAt,
 		&updatedAt,
+		&deletedAt,
 		&syncedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -822,21 +853,26 @@ func (s *Store) scanLoreFrom(sc scanner) (*Lore, error) {
 	}
 
 	lore.Category = Category(category)
+	lore.EmbeddingStatus = embeddingStatus
 	if context.Valid {
 		lore.Context = context.String
 	}
 	if len(embeddingBlob) > 0 {
 		lore.Embedding = embeddingBlob
 	}
-	if sources.Valid {
+	if sources.Valid && sources.String != "" && sources.String != "[]" {
 		lore.Sources = strings.Split(sources.String, ",")
 	}
-	if lastValidated.Valid {
-		t, _ := time.Parse(time.RFC3339, lastValidated.String)
-		lore.LastValidated = &t
+	if lastValidatedAt.Valid {
+		t, _ := time.Parse(time.RFC3339, lastValidatedAt.String)
+		lore.LastValidatedAt = &t
 	}
 	lore.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	lore.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	if deletedAt.Valid {
+		t, _ := time.Parse(time.RFC3339, deletedAt.String)
+		lore.DeletedAt = &t
+	}
 	if syncedAt.Valid {
 		t, _ := time.Parse(time.RFC3339, syncedAt.String)
 		lore.SyncedAt = &t
@@ -853,6 +889,67 @@ func (s *Store) scanLore(row *sql.Row) (*Lore, error) {
 // scanLoreRows scans a single row from Query iteration.
 func (s *Store) scanLoreRows(rows *sql.Rows) (*Lore, error) {
 	return s.scanLoreFrom(rows)
+}
+
+// scanSnapshotLoreRows scans a lore row from Engram snapshots (no synced_at column).
+func (s *Store) scanSnapshotLoreRows(rows *sql.Rows) (*Lore, error) {
+	var (
+		lore            Lore
+		context         sql.NullString
+		embeddingBlob   []byte
+		embeddingStatus string
+		sources         sql.NullString
+		lastValidatedAt sql.NullString
+		deletedAt       sql.NullString
+		createdAt       string
+		updatedAt       string
+		category        string
+	)
+
+	err := rows.Scan(
+		&lore.ID,
+		&lore.Content,
+		&context,
+		&category,
+		&lore.Confidence,
+		&embeddingBlob,
+		&embeddingStatus,
+		&lore.SourceID,
+		&sources,
+		&lore.ValidationCount,
+		&lastValidatedAt,
+		&createdAt,
+		&updatedAt,
+		&deletedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	lore.Category = Category(category)
+	lore.EmbeddingStatus = embeddingStatus
+	if context.Valid {
+		lore.Context = context.String
+	}
+	if len(embeddingBlob) > 0 {
+		lore.Embedding = embeddingBlob
+	}
+	if sources.Valid && sources.String != "" && sources.String != "[]" {
+		lore.Sources = strings.Split(sources.String, ",")
+	}
+	if lastValidatedAt.Valid {
+		t, _ := time.Parse(time.RFC3339, lastValidatedAt.String)
+		lore.LastValidatedAt = &t
+	}
+	lore.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	lore.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	if deletedAt.Valid {
+		t, _ := time.Parse(time.RFC3339, deletedAt.String)
+		lore.DeletedAt = &t
+	}
+	// synced_at is not in Engram snapshots, leave it nil
+
+	return &lore, nil
 }
 
 // PendingFeedback returns feedback entries pending sync.
@@ -982,7 +1079,7 @@ func (s *Store) CompleteSyncEntries(queueIDs []int64, loreIDs []string) error {
 			loreArgs = append(loreArgs, id)
 		}
 		_, err = tx.Exec(
-			fmt.Sprintf("UPDATE lore SET synced_at = ? WHERE id IN (%s)", strings.Join(lorePlaceholders, ",")),
+			fmt.Sprintf("UPDATE lore_entries SET synced_at = ? WHERE id IN (%s)", strings.Join(lorePlaceholders, ",")),
 			loreArgs...,
 		)
 		if err != nil {
@@ -1045,9 +1142,9 @@ func (s *Store) GetLoreByIDs(ids []string) ([]Lore, error) {
 	}
 
 	rows, err := s.db.Query(fmt.Sprintf(`
-		SELECT id, content, context, category, confidence, embedding, source_id, sources,
-		       validation_count, last_validated, created_at, updated_at, synced_at
-		FROM lore WHERE id IN (%s)
+		SELECT id, content, context, category, confidence, embedding, embedding_status, source_id, sources,
+		       validation_count, last_validated_at, created_at, updated_at, deleted_at, synced_at
+		FROM lore_entries WHERE id IN (%s) AND deleted_at IS NULL
 	`, strings.Join(placeholders, ",")), args...)
 	if err != nil {
 		return nil, fmt.Errorf("query lore: %w", err)
