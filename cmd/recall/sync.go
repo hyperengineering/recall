@@ -78,11 +78,19 @@ func runSyncPush(cmd *cobra.Command, args []string) error {
 
 	statsBefore, _ := client.Stats()
 
+	var syncErr error
 	start := time.Now()
-	if err := client.SyncPush(ctx); err != nil {
-		return fmt.Errorf("push: %w", err)
-	}
+
+	out := cmd.OutOrStdout()
+	syncErr = runWithSpinner(out, "Pushing to Engram", func() error {
+		return client.SyncPush(ctx)
+	})
+
 	duration := time.Since(start)
+
+	if syncErr != nil {
+		return fmt.Errorf("push: %w", syncErr)
+	}
 
 	statsAfter, _ := client.Stats()
 
@@ -108,11 +116,19 @@ func runSyncBootstrap(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
+	var bootstrapErr error
 	start := time.Now()
-	if err := client.Bootstrap(ctx); err != nil {
-		return fmt.Errorf("bootstrap: %w", err)
-	}
+
+	out := cmd.OutOrStdout()
+	bootstrapErr = runWithSpinner(out, "Bootstrapping from Engram", func() error {
+		return client.Bootstrap(ctx)
+	})
+
 	duration := time.Since(start)
+
+	if bootstrapErr != nil {
+		return fmt.Errorf("bootstrap: %w", bootstrapErr)
+	}
 
 	stats, _ := client.Stats()
 

@@ -46,23 +46,9 @@ go get github.com/hyperengineering/recall
 
 ## Quick Start
 
-### 1. Configure
+Recall works out of the box with zero configuration. By default, it stores lore in `./data/lore.db`.
 
-Set the required environment variable:
-
-```bash
-export RECALL_DB_PATH="./data/lore.db"
-```
-
-For Engram sync (optional):
-
-```bash
-export ENGRAM_URL="https://engram.example.com"
-export ENGRAM_API_KEY="your-api-key"
-export RECALL_SOURCE_ID="my-workstation"
-```
-
-### 2. Record Lore
+### 1. Record Lore
 
 ```bash
 # Record a new insight
@@ -122,17 +108,43 @@ recall sync push
 recall sync bootstrap
 ```
 
+## Configuration
+
+### Database Path (Optional)
+
+By default, Recall stores data in `./data/lore.db`. To customize:
+
+```bash
+# Via environment variable
+export RECALL_DB_PATH="/path/to/your/lore.db"
+
+# Via flag
+recall record --lore-path /path/to/your/lore.db --content "..." -c PATTERN_OUTCOME
+```
+
+### Engram Sync (Optional)
+
+For cross-environment synchronization with Engram:
+
+```bash
+export ENGRAM_URL="https://engram.example.com"
+export ENGRAM_API_KEY="your-api-key"
+export RECALL_SOURCE_ID="my-workstation"  # defaults to hostname
+```
+
 ## CLI Reference
 
 ### Global Flags
 
-| Flag | Environment Variable | Description |
-|------|---------------------|-------------|
-| `--lore-path` | `RECALL_DB_PATH` | Path to local SQLite database (required) |
-| `--engram-url` | `ENGRAM_URL` | URL of Engram central service |
-| `--api-key` | `ENGRAM_API_KEY` | API key for Engram authentication |
-| `--source-id` | `RECALL_SOURCE_ID` | Client source identifier |
-| `--json` | - | Output as JSON instead of human-readable |
+| Flag | Environment Variable | Default | Description |
+|------|---------------------|---------|-------------|
+| `--lore-path` | `RECALL_DB_PATH` | `./data/lore.db` | Path to local SQLite database |
+| `--engram-url` | `ENGRAM_URL` | - | URL of Engram central service |
+| `--api-key` | `ENGRAM_API_KEY` | - | API key for Engram authentication |
+| `--source-id` | `RECALL_SOURCE_ID` | hostname | Client source identifier |
+| `--json` | - | - | Output as JSON instead of human-readable |
+
+Configuration priority: flag > environment variable > default.
 
 ### recall record
 

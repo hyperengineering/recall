@@ -135,12 +135,32 @@ func TestConfigFromEnv_UnsetVarsDefaultToEmpty(t *testing.T) {
 	}
 }
 
-func TestWithDefaults_DoesNotFillLocalPath(t *testing.T) {
-	// Pin DEV-1 behavioral decision: LocalPath is required user input,
-	// WithDefaults() intentionally does NOT fill it.
+// TestDefaultConfig_IncludesLocalPath verifies DefaultConfig returns sensible default path.
+// Story 5.5: Zero-configuration first run.
+func TestDefaultConfig_IncludesLocalPath(t *testing.T) {
+	cfg := recall.DefaultConfig()
+	want := "./data/lore.db"
+	if cfg.LocalPath != want {
+		t.Errorf("DefaultConfig().LocalPath = %q, want %q", cfg.LocalPath, want)
+	}
+}
+
+// TestWithDefaults_AppliesLocalPath verifies WithDefaults fills LocalPath when empty.
+// Story 5.5: Supersedes DEV-1 decision — UX improvement for zero-config first run.
+func TestWithDefaults_AppliesLocalPath(t *testing.T) {
 	cfg := recall.Config{}.WithDefaults()
-	if cfg.LocalPath != "" {
-		t.Errorf("WithDefaults().LocalPath = %q, want empty (LocalPath is required user input)", cfg.LocalPath)
+	want := "./data/lore.db"
+	if cfg.LocalPath != want {
+		t.Errorf("WithDefaults().LocalPath = %q, want %q", cfg.LocalPath, want)
+	}
+}
+
+// TestWithDefaults_PreservesExplicitLocalPath verifies explicit paths are not overwritten.
+func TestWithDefaults_PreservesExplicitLocalPath(t *testing.T) {
+	explicit := "/custom/path/to/lore.db"
+	cfg := recall.Config{LocalPath: explicit}.WithDefaults()
+	if cfg.LocalPath != explicit {
+		t.Errorf("WithDefaults().LocalPath = %q, want %q (should preserve explicit)", cfg.LocalPath, explicit)
 	}
 }
 

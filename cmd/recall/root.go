@@ -26,10 +26,14 @@ var rootCmd = &cobra.Command{
 It allows AI agents and developers to capture, query, and synchronize
 learned insights across sessions and environments.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println(renderBannerWithTagline())
-		fmt.Println()
+		if isTTY() {
+			fmt.Println(renderBannerWithTagline())
+			fmt.Println()
+		}
 		cmd.Help()
 	},
+	SilenceErrors: true, // We handle error output with styled messages
+	SilenceUsage:  true, // Prevent usage dump on error - we show styled errors only
 }
 
 func init() {

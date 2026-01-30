@@ -31,11 +31,11 @@ type Config struct {
 }
 
 // DefaultConfig returns a Config with sensible defaults.
-// Note: LocalPath is not defaulted — it is required user input and must be
-// explicitly provided before calling Validate().
+// LocalPath defaults to "./data/lore.db" for zero-configuration first run (Story 5.5).
 func DefaultConfig() Config {
 	hostname, _ := os.Hostname()
 	return Config{
+		LocalPath:    "./data/lore.db",
 		SyncInterval: 5 * time.Minute,
 		AutoSync:     true,
 		SourceID:     hostname,
@@ -82,10 +82,13 @@ func (c *Config) IsOffline() bool {
 }
 
 // WithDefaults fills in default values for unset fields.
-// Note: LocalPath is intentionally not defaulted — it is required user input.
+// LocalPath defaults to "./data/lore.db" for zero-configuration first run (Story 5.5).
 func (c Config) WithDefaults() Config {
 	defaults := DefaultConfig()
 
+	if c.LocalPath == "" {
+		c.LocalPath = defaults.LocalPath
+	}
 	if c.SyncInterval == 0 {
 		c.SyncInterval = defaults.SyncInterval
 	}

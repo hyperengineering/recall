@@ -5,9 +5,11 @@ import (
 )
 
 func main() {
+	// Initialize styled help after all commands are registered
+	initHelp(rootCmd)
+
 	if err := rootCmd.Execute(); err != nil {
-		// Cobra already prints the error, but we re-print through outputError
-		// to ensure API keys are scrubbed from any error messages (defense in depth)
+		// Print styled error with API key scrubbing (defense in depth)
 		outputError(os.Stderr, err)
 		os.Exit(1)
 	}

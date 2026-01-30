@@ -80,14 +80,22 @@ func TestCLI_Help_ListsAllCommands(t *testing.T) {
 	}
 }
 
-func TestCLI_Record_MissingConfig(t *testing.T) {
-	// Don't use testEnv - test with missing RECALL_DB_PATH
+// TestCLI_Record_DefaultPath verifies record works with default path when no config is set.
+// Story 5.5: Zero-configuration first run.
+func TestCLI_Record_DefaultPath(t *testing.T) {
+	// Save original env and flags
 	origDBPath := os.Getenv("RECALL_DB_PATH")
 	origEngramURL := os.Getenv("ENGRAM_URL")
+
+	// Use temp dir for default path to avoid polluting workspace
+	tmpDir := t.TempDir()
+	origWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origWd)
+
+	// Clear all config - should use default ./data/lore.db
 	os.Setenv("RECALL_DB_PATH", "")
 	os.Setenv("ENGRAM_URL", "")
-
-	// Reset globals
 	cfgLorePath = ""
 	cfgEngramURL = ""
 	cfgAPIKey = ""
@@ -108,21 +116,23 @@ func TestCLI_Record_MissingConfig(t *testing.T) {
 		recordCategory = ""
 	}()
 
-	var stderr bytes.Buffer
-	rootCmd.SetErr(&stderr)
-	rootCmd.SetArgs([]string{"record", "--content", "test", "-c", "PATTERN_OUTCOME"})
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"record", "--content", "zero config test", "-c", "PATTERN_OUTCOME"})
 
 	err := rootCmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for missing config")
+	if err != nil {
+		t.Fatalf("record with default path should succeed, got error: %v", err)
 	}
 
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "LocalPath") {
-		t.Errorf("error should mention LocalPath, got: %s", errMsg)
+	output := stdout.String()
+	if !strings.Contains(output, "Recorded:") {
+		t.Errorf("output should contain 'Recorded:', got: %s", output)
 	}
-	if !strings.Contains(errMsg, "RECALL_DB_PATH") {
-		t.Errorf("error should mention RECALL_DB_PATH env var, got: %s", errMsg)
+
+	// Verify database was created in default location
+	if _, err := os.Stat(filepath.Join(tmpDir, "data", "lore.db")); os.IsNotExist(err) {
+		t.Error("default database ./data/lore.db should have been created")
 	}
 }
 
@@ -338,6 +348,80 @@ func TestCLI_Session_JSONEmpty(t *testing.T) {
 	}
 }
 
+// TestCLI_Session_DefaultPath verifies session works with default path when no config is set.
+// Story 5.5 AC#1: Zero-configuration first run.
+func TestCLI_Session_DefaultPath(t *testing.T) {
+	origDBPath := os.Getenv("RECALL_DB_PATH")
+	origEngramURL := os.Getenv("ENGRAM_URL")
+
+	tmpDir := t.TempDir()
+	origWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origWd)
+
+	os.Setenv("RECALL_DB_PATH", "")
+	os.Setenv("ENGRAM_URL", "")
+	cfgLorePath = ""
+	cfgEngramURL = ""
+
+	defer func() {
+		os.Setenv("RECALL_DB_PATH", origDBPath)
+		os.Setenv("ENGRAM_URL", origEngramURL)
+		cfgLorePath = ""
+		cfgEngramURL = ""
+	}()
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"session"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("session with default path should succeed, got error: %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "No lore surfaced") {
+		t.Errorf("output should indicate empty session, got: %s", output)
+	}
+}
+
+// TestCLI_Stats_DefaultPath verifies stats works with default path when no config is set.
+// Story 5.5 AC#2: Zero-configuration first run.
+func TestCLI_Stats_DefaultPath(t *testing.T) {
+	origDBPath := os.Getenv("RECALL_DB_PATH")
+	origEngramURL := os.Getenv("ENGRAM_URL")
+
+	tmpDir := t.TempDir()
+	origWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origWd)
+
+	os.Setenv("RECALL_DB_PATH", "")
+	os.Setenv("ENGRAM_URL", "")
+	cfgLorePath = ""
+	cfgEngramURL = ""
+
+	defer func() {
+		os.Setenv("RECALL_DB_PATH", origDBPath)
+		os.Setenv("ENGRAM_URL", origEngramURL)
+		cfgLorePath = ""
+		cfgEngramURL = ""
+	}()
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetArgs([]string{"stats"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("stats with default path should succeed, got error: %v", err)
+	}
+
+	// Stats command succeeded - that's the main assertion for AC#2
+	// The output format is tested elsewhere; here we just verify it works with default path
+}
+
 func TestCLI_Config_FlagOverridesEnv(t *testing.T) {
 	cleanup := testEnv(t)
 	defer cleanup()
@@ -367,6 +451,28 @@ func TestCLI_Config_EnvFallback(t *testing.T) {
 	cfg := loadConfig()
 	if cfg.LocalPath != envPath {
 		t.Errorf("should use env when flag not set, got LocalPath=%s, want %s", cfg.LocalPath, envPath)
+	}
+}
+
+// TestCLI_Config_DefaultPath verifies loadConfig uses default when neither flag nor env is set.
+// Story 5.5: Zero-configuration first run. Precedence: flag > env > default.
+func TestCLI_Config_DefaultPath(t *testing.T) {
+	// Save original env
+	origDBPath := os.Getenv("RECALL_DB_PATH")
+
+	// Clear all config sources
+	os.Setenv("RECALL_DB_PATH", "")
+	cfgLorePath = ""
+
+	defer func() {
+		os.Setenv("RECALL_DB_PATH", origDBPath)
+		cfgLorePath = ""
+	}()
+
+	cfg := loadConfig()
+	want := "./data/lore.db"
+	if cfg.LocalPath != want {
+		t.Errorf("loadConfig().LocalPath = %q, want %q (default)", cfg.LocalPath, want)
 	}
 }
 
@@ -786,13 +892,22 @@ func TestCLI_Session_JSON(t *testing.T) {
 	}
 }
 
-func TestCLI_Query_MissingConfig(t *testing.T) {
-	// Test without RECALL_DB_PATH
+// TestCLI_Query_DefaultPath verifies query works with default path when no config is set.
+// Story 5.5: Zero-configuration first run.
+func TestCLI_Query_DefaultPath(t *testing.T) {
+	// Save original env and flags
 	origDBPath := os.Getenv("RECALL_DB_PATH")
 	origEngramURL := os.Getenv("ENGRAM_URL")
+
+	// Use temp dir for default path to avoid polluting workspace
+	tmpDir := t.TempDir()
+	origWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origWd)
+
+	// Clear all config - should use default ./data/lore.db
 	os.Setenv("RECALL_DB_PATH", "")
 	os.Setenv("ENGRAM_URL", "")
-
 	cfgLorePath = ""
 	cfgEngramURL = ""
 	resetQueryFlags()
@@ -804,15 +919,18 @@ func TestCLI_Query_MissingConfig(t *testing.T) {
 		cfgEngramURL = ""
 	}()
 
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
 	rootCmd.SetArgs([]string{"query", "test"})
 
 	err := rootCmd.Execute()
-	if err == nil {
-		t.Fatal("query without config should error")
+	if err != nil {
+		t.Fatalf("query with default path should succeed, got error: %v", err)
 	}
 
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "LocalPath") || !strings.Contains(errMsg, "RECALL_DB_PATH") {
-		t.Errorf("error should mention missing config, got: %s", errMsg)
+	output := stdout.String()
+	// Query with no results should show "No matching lore"
+	if !strings.Contains(output, "No matching lore") {
+		t.Errorf("output should indicate no results (fresh db), got: %s", output)
 	}
 }

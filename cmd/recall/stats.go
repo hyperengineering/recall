@@ -16,7 +16,8 @@ var statsCmd = &cobra.Command{
 
 Example:
   recall stats
-  recall stats --health`,
+  recall stats --health
+  recall stats --json`,
 	RunE: runStats,
 }
 
@@ -24,6 +25,22 @@ var statsHealth bool
 
 func init() {
 	statsCmd.Flags().BoolVar(&statsHealth, "health", false, "Include health check")
+}
+
+// statsOutput represents the JSON output structure for stats
+type statsOutput struct {
+	LoreCount     int        `json:"lore_count"`
+	PendingSync   int        `json:"pending_sync"`
+	SchemaVersion string     `json:"schema_version"`
+	LastSync      *time.Time `json:"last_sync,omitempty"`
+	Health        *healthOutput `json:"health,omitempty"`
+}
+
+type healthOutput struct {
+	Healthy        bool   `json:"healthy"`
+	StoreOK        bool   `json:"store_ok"`
+	EngramReachable bool  `json:"engram_reachable"`
+	Error          string `json:"error,omitempty"`
 }
 
 func runStats(cmd *cobra.Command, args []string) error {
@@ -38,40 +55,76 @@ func runStats(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get stats: %w", err)
 	}
 
-	fmt.Println("Local Store Statistics")
-	fmt.Println("----------------------")
-	fmt.Printf("Lore count:     %d\n", stats.LoreCount)
-	fmt.Printf("Pending sync:   %d\n", stats.PendingSync)
-	fmt.Printf("Schema version: %s\n", stats.SchemaVersion)
+	out := cmd.OutOrStdout()
+
+	// Build output structure
+	result := statsOutput{
+		LoreCount:     stats.LoreCount,
+		PendingSync:   stats.PendingSync,
+		SchemaVersion: stats.SchemaVersion,
+	}
+	if !stats.LastSync.IsZero() {
+		result.LastSync = &stats.LastSync
+	}
+
+	// Include health check if requested
+	var health *recall.HealthStatus
+	if statsHealth {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		h := client.HealthCheck(ctx)
+		health = &h
+		result.Health = &healthOutput{
+			Healthy:        h.Healthy,
+			StoreOK:        h.StoreOK,
+			EngramReachable: h.EngramReachable,
+			Error:          h.Error,
+		}
+	}
+
+	// JSON output
+	if outputJSON {
+		return outputAsJSON(cmd, result)
+	}
+
+	// Human-readable output with styling
+	printInfo(out, "Local Store Statistics")
+	fmt.Fprintf(out, "  Lore count:     %d\n", stats.LoreCount)
+	fmt.Fprintf(out, "  Pending sync:   %d\n", stats.PendingSync)
+	fmt.Fprintf(out, "  Schema version: %s\n", stats.SchemaVersion)
 
 	if !stats.LastSync.IsZero() {
-		fmt.Printf("Last sync:      %s (%s ago)\n",
+		fmt.Fprintf(out, "  Last sync:      %s (%s ago)\n",
 			stats.LastSync.Format(time.RFC3339),
 			time.Since(stats.LastSync).Round(time.Minute))
 	} else {
-		fmt.Println("Last sync:      never")
+		printMuted(out, "  Last sync:      never")
 	}
 
-	if statsHealth {
-		fmt.Println()
-		fmt.Println("Health Check")
-		fmt.Println("------------")
+	if health != nil {
+		fmt.Fprintln(out)
+		printInfo(out, "Health Check")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		health := client.HealthCheck(ctx)
-
-		status := "healthy"
-		if !health.Healthy {
-			status = "unhealthy"
+		if health.Healthy {
+			printSuccess(out, "Status: healthy")
+		} else {
+			printError(out, "Status: unhealthy")
 		}
-		fmt.Printf("Status:           %s\n", status)
-		fmt.Printf("Store OK:         %v\n", health.StoreOK)
-		fmt.Printf("Engram reachable: %v\n", health.EngramReachable)
+
+		if health.StoreOK {
+			fmt.Fprintf(out, "  Store:  %s\n", successStyle.Render("OK"))
+		} else {
+			fmt.Fprintf(out, "  Store:  %s\n", errorStyle.Render("FAILED"))
+		}
+
+		if health.EngramReachable {
+			fmt.Fprintf(out, "  Engram: %s\n", successStyle.Render("reachable"))
+		} else {
+			fmt.Fprintf(out, "  Engram: %s\n", warningStyle.Render("unreachable"))
+		}
 
 		if health.Error != "" {
-			fmt.Printf("Error:            %s\n", health.Error)
+			printError(out, "Error: %s", health.Error)
 		}
 	}
 

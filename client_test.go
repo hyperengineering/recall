@@ -3,6 +3,7 @@ package recall_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -27,18 +28,27 @@ func TestNew_ValidConfig(t *testing.T) {
 	}
 }
 
-func TestNew_MissingLocalPath(t *testing.T) {
-	_, err := recall.New(recall.Config{LocalPath: ""})
-	if err == nil {
-		t.Fatal("New() returned nil error, want ValidationError")
-	}
+// TestNew_EmptyLocalPath_UsesDefault verifies that New() with empty LocalPath
+// succeeds by applying the default path. Story 5.5: Zero-configuration first run.
+// This supersedes the previous behavior (Story 1.1 AC#4) where empty LocalPath
+// returned ValidationError. The UX improvement allows zero-config startup.
+func TestNew_EmptyLocalPath_UsesDefault(t *testing.T) {
+	// Use temp dir as working directory to avoid polluting workspace
+	tmpDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
 
-	var ve *recall.ValidationError
-	if !errors.As(err, &ve) {
-		t.Fatalf("New() returned %T, want *ValidationError", err)
+	client, err := recall.New(recall.Config{LocalPath: ""})
+	if err != nil {
+		t.Fatalf("New() with empty LocalPath should succeed with default, got error: %v", err)
 	}
-	if ve.Field != "LocalPath" {
-		t.Errorf("ValidationError.Field = %q, want %q", ve.Field, "LocalPath")
+	defer client.Close()
+
+	// Verify database was created in default location
+	defaultPath := filepath.Join(tmpDir, "data", "lore.db")
+	if _, err := os.Stat(defaultPath); os.IsNotExist(err) {
+		t.Errorf("default database ./data/lore.db should have been created at %s", defaultPath)
 	}
 }
 
