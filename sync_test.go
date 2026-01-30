@@ -152,8 +152,8 @@ func TestSyncer_Push_FeedbackSuccess(t *testing.T) {
 	if len(receivedPayload.Feedback) != 1 {
 		t.Fatalf("expected 1 feedback in payload, got %d", len(receivedPayload.Feedback))
 	}
-	if receivedPayload.Feedback[0].Outcome != "helpful" {
-		t.Errorf("outcome = %q, want %q", receivedPayload.Feedback[0].Outcome, "helpful")
+	if receivedPayload.Feedback[0].Type != "helpful" {
+		t.Errorf("type = %q, want %q", receivedPayload.Feedback[0].Type, "helpful")
 	}
 
 	// Verify queue is cleared
@@ -413,7 +413,7 @@ func TestSyncer_Push_DeletedLore(t *testing.T) {
 	store.InsertLore(lore)
 
 	// Delete the lore but keep queue entry
-	store.db.Exec("DELETE FROM lore WHERE id = ?", lore.ID)
+	store.db.Exec("DELETE FROM lore_entries WHERE id = ?", lore.ID)
 
 	httpCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

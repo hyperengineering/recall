@@ -81,8 +81,8 @@ type engramFeedbackRequest struct {
 
 // engramFeedbackEntryDTO represents a single feedback entry.
 type engramFeedbackEntryDTO struct {
-	ID      string `json:"id"`
-	Outcome string `json:"outcome"` // helpful | not_relevant | incorrect
+	LoreID string `json:"lore_id"`
+	Type   string `json:"type"` // helpful | not_relevant | incorrect
 }
 
 // Sync performs a full sync cycle: push pending, then pull updates.
@@ -267,8 +267,8 @@ func (s *Syncer) pushFeedbackEntries(ctx context.Context, entries []SyncQueueEnt
 			}
 		}
 		feedbackDTOs = append(feedbackDTOs, engramFeedbackEntryDTO{
-			ID:      e.LoreID,
-			Outcome: payload.Outcome,
+			LoreID: e.LoreID,
+			Type:   payload.Outcome,
 		})
 	}
 

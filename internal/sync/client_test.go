@@ -208,7 +208,7 @@ func TestHTTPClient_PushLore_ValidationError(t *testing.T) {
 func TestHTTPClient_PushFeedback_Success(t *testing.T) {
 	expected := &PushFeedbackResponse{
 		Updates: []FeedbackUpdate{
-			{ID: "1", Previous: 0.8, Current: 0.9, ValidationCount: 5},
+			{LoreID: "1", PreviousConfidence: 0.8, CurrentConfidence: 0.9, ValidationCount: 5},
 		},
 	}
 
@@ -228,7 +228,7 @@ func TestHTTPClient_PushFeedback_Success(t *testing.T) {
 	req := &PushFeedbackRequest{
 		SourceID: "test-source",
 		Feedback: []FeedbackPayload{
-			{ID: "1", Outcome: "helpful"},
+			{LoreID: "1", Type: "helpful"},
 		},
 	}
 	result, err := client.PushFeedback(context.Background(), req)
@@ -239,8 +239,8 @@ func TestHTTPClient_PushFeedback_Success(t *testing.T) {
 	if len(result.Updates) != 1 {
 		t.Errorf("Updates count = %d, want 1", len(result.Updates))
 	}
-	if result.Updates[0].ID != "1" {
-		t.Errorf("Update ID = %q, want %q", result.Updates[0].ID, "1")
+	if result.Updates[0].LoreID != "1" {
+		t.Errorf("Update LoreID = %q, want %q", result.Updates[0].LoreID, "1")
 	}
 }
 
@@ -252,7 +252,7 @@ func TestHTTPClient_PushFeedback_NotFound(t *testing.T) {
 	defer server.Close()
 
 	client := NewHTTPClient(server.URL, "test-api-key")
-	req := &PushFeedbackRequest{SourceID: "test", Feedback: []FeedbackPayload{{ID: "missing", Outcome: "helpful"}}}
+	req := &PushFeedbackRequest{SourceID: "test", Feedback: []FeedbackPayload{{LoreID: "missing", Type: "helpful"}}}
 	_, err := client.PushFeedback(context.Background(), req)
 
 	if err == nil {

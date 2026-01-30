@@ -42,8 +42,8 @@ type PushFeedbackRequest struct {
 
 // FeedbackPayload represents a single feedback entry.
 type FeedbackPayload struct {
-	ID      string `json:"id"`
-	Outcome string `json:"outcome"` // helpful | not_relevant | incorrect
+	LoreID string `json:"lore_id"`
+	Type   string `json:"type"` // helpful | not_relevant | incorrect
 }
 
 // PushFeedbackResponse from POST /api/v1/lore/feedback
@@ -53,8 +53,8 @@ type PushFeedbackResponse struct {
 
 // FeedbackUpdate represents a single feedback result.
 type FeedbackUpdate struct {
-	ID              string  `json:"id"`
-	Previous        float64 `json:"previous"`
-	Current         float64 `json:"current"`
-	ValidationCount int     `json:"validation_count"`
+	LoreID             string  `json:"lore_id"`
+	PreviousConfidence float64 `json:"previous_confidence"`
+	CurrentConfidence  float64 `json:"current_confidence"`
+	ValidationCount    int     `json:"validation_count"`
 }
