@@ -1,0 +1,94 @@
+version: 2
+
+project_name: recall
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: recall
+    main: ./cmd/recall
+    binary: recall
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: hyperengineering
+    name: recall
+  draft: false
+  prerelease: auto
+  name_template: "{{.Tag}}"
+
+brews:
+  - name: recall
+    repository:
+      owner: hyperengineering
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/hyperengineering/recall"
+    description: "CLI for managing experiential lore from AI agent workflows"
+    license: "MIT"
+    install: |
+      bin.install "recall"
+    test: |
+      system "#{bin}/recall", "version"
+
+dockers:
+  - image_templates:
+      - "ghcr.io/hyperengineering/recall:{{ .Tag }}"
+      - "ghcr.io/hyperengineering/recall:v{{ .Major }}"
+      - "ghcr.io/hyperengineering/recall:v{{ .Major }}.{{ .Minor }}"
+      - "ghcr.io/hyperengineering/recall:latest"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64,linux/arm64"
+      - "--label=org.opencontainers.image.title=recall"
+      - "--label=org.opencontainers.image.description=CLI for managing experiential lore"
+      - "--label=org.opencontainers.image.source=https://github.com/hyperengineering/recall"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
