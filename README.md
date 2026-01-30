@@ -13,11 +13,30 @@ Recall enables AI agents to:
 
 ## Installation
 
-### CLI
+### Homebrew (macOS/Linux)
+
+```bash
+brew install hyperengineering/tap/recall
+```
+
+### Go Install
 
 ```bash
 go install github.com/hyperengineering/recall/cmd/recall@latest
 ```
+
+### Docker
+
+```bash
+docker pull ghcr.io/hyperengineering/recall:latest
+
+# Run with local database mounted
+docker run -v ./data:/data -e RECALL_DB_PATH=/data/lore.db ghcr.io/hyperengineering/recall:latest query "your search"
+```
+
+### Download Binary
+
+Pre-built binaries for Linux, macOS, and Windows are available on the [Releases](https://github.com/hyperengineering/recall/releases) page.
 
 ### Library
 
@@ -245,6 +264,32 @@ recall session
 recall session --json
 ```
 
+### recall version
+
+Print version information.
+
+```
+recall version [flags]
+```
+
+**Example:**
+
+```bash
+recall version
+recall version --json
+```
+
+```json
+{
+  "version": "1.0.0",
+  "commit": "abc1234",
+  "date": "2026-01-30T12:00:00Z",
+  "go": "go1.23.12",
+  "os": "darwin",
+  "arch": "arm64"
+}
+```
+
 ### recall stats
 
 Display store statistics.
@@ -276,12 +321,18 @@ recall stats --json
 ```go
 type Config struct {
     LocalPath    string        // Path to local SQLite database (required)
-    EngramURL    string        // Central service URL (optional)
-    APIKey       string        // Engram API key
+    EngramURL    string        // Central service URL (optional, empty = offline mode)
+    APIKey       string        // Engram API key (required if EngramURL is set)
     SourceID     string        // Client identifier (defaults to hostname)
     SyncInterval time.Duration // Auto-sync interval (default: 5m)
     AutoSync     bool          // Enable background sync (default: true)
 }
+```
+
+You can also load configuration from environment variables:
+
+```go
+cfg := recall.ConfigFromEnv() // Reads from RECALL_DB_PATH, ENGRAM_URL, etc.
 ```
 
 ### Offline Mode
@@ -328,22 +379,25 @@ package main
 import (
     "context"
     "fmt"
+    "log"
+
     "github.com/hyperengineering/recall"
 )
 
 func main() {
-    // Create client
+    // Create client - offline mode when EngramURL is not set
     client, err := recall.New(recall.Config{
         LocalPath: "./data/lore.db",
-        EngramURL: "https://engram.example.com",
-        APIKey:    "your-api-key",
+        // Optional: EngramURL and APIKey for sync with Engram
+        // EngramURL: "https://engram.example.com",
+        // APIKey:    "your-api-key",
     })
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
     defer client.Close()
 
-    // Record lore
+    // Record lore using functional options
     lore, err := client.Record(
         "ORM generates N+1 queries without eager loading",
         recall.CategoryDependencyBehavior,
@@ -351,35 +405,39 @@ func main() {
         recall.WithConfidence(0.7),
     )
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
     fmt.Printf("Recorded: %s\n", lore.ID)
 
     // Query for relevant lore
     ctx := context.Background()
+    minConf := 0.5
     result, err := client.Query(ctx, recall.QueryParams{
-        Query: "database performance",
-        K:     5,
+        Query:         "database performance",
+        K:             5,
+        MinConfidence: &minConf,
     })
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
 
     for _, l := range result.Lore {
-        fmt.Printf("[%s] %s\n", l.Category, l.Content)
+        fmt.Printf("[%s] %s (confidence: %.2f)\n", l.Category, l.Content, l.Confidence)
     }
 
-    // Provide feedback using session reference
+    // Provide feedback using session reference (L1, L2, etc.)
     if len(result.Lore) > 0 {
-        _, err = client.Feedback("L1", recall.Helpful)
+        updated, err := client.Feedback("L1", recall.Helpful)
         if err != nil {
-            panic(err)
+            log.Fatal(err)
         }
+        fmt.Printf("Updated confidence: %.2f\n", updated.Confidence)
     }
 
-    // Sync with Engram
+    // Sync with Engram (only if configured)
     if err := client.Sync(ctx); err != nil {
-        fmt.Printf("Sync failed: %v\n", err)
+        // Returns ErrOffline if EngramURL not configured
+        fmt.Printf("Sync: %v\n", err)
     }
 }
 ```
@@ -481,7 +539,7 @@ Or accept offline-only mode — local operations (record, query, feedback) work 
 
 ## MCP Integration
 
-Recall provides optional MCP (Model Context Protocol) adapters:
+Recall provides optional MCP (Model Context Protocol) adapters for integration with AI agent frameworks:
 
 ```go
 import (
@@ -490,22 +548,40 @@ import (
 )
 
 client, _ := recall.New(cfg)
+
+// Register tools with your MCP-compatible registry
+// The registry must implement recallmcp.Registry interface
 recallmcp.RegisterTools(mcpRegistry, client)
 ```
 
 Available tools:
-- `recall_query` - Retrieve relevant lore
-- `recall_record` - Capture new lore
-- `recall_feedback` - Provide feedback on recalled lore
+- `recall_query` - Retrieve relevant lore based on semantic similarity
+- `recall_record` - Capture new lore with content, category, and optional context
+- `recall_feedback` - Provide feedback (helpful/incorrect/not_relevant) on recalled lore
 
 ## Development
 
 ```bash
+# Download dependencies
+make deps
+
 # Run tests
 make test
 
+# Run tests with coverage report
+make test-cover
+
+# Run tests with race detector
+make test-race
+
 # Run linter
 make lint
+
+# Format code
+make fmt
+
+# Run go vet
+make vet
 
 # Build CLI
 make build
@@ -513,8 +589,17 @@ make build
 # Install to GOPATH
 make install
 
-# Run all CI checks
+# Run all CI checks (fmt, vet, lint, test, build)
 make ci
+
+# Cross-compile for all platforms
+make release
+
+# Generate code (mocks, etc.)
+make generate
+
+# Clean build artifacts
+make clean
 ```
 
 ## Architecture
