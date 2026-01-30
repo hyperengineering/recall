@@ -1,16 +1,15 @@
+version: "2"
+
 linters:
   enable:
     - errcheck
     - staticcheck
     - unused
-
-issues:
-  exclude-rules:
-    # Exclude errcheck for test files - test cleanup code often ignores errors intentionally
-    - path: _test\.go
-      linters:
-        - errcheck
-    # Exclude errcheck for example files
-    - path: examples/
-      linters:
-        - errcheck
+  exclusions:
+    rules:
+      - path: '(.+)_test\.go'
+        linters:
+          - errcheck
+      - path: 'examples/'
+        linters:
+          - errcheck

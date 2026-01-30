@@ -459,7 +459,7 @@ func TestHTTPClient_SourceIDHeader_OmittedWhenEmpty(t *testing.T) {
 	var headerPresent bool
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, headerPresent = r.Header["X-Recall-Source-ID"]
+		headerPresent = r.Header.Get("X-Recall-Source-ID") != ""
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(&HealthResponse{Status: "ok"})
 	}))
@@ -479,7 +479,7 @@ func TestHTTPClient_SourceIDHeader_OmittedWhenWhitespaceOnly(t *testing.T) {
 	var headerPresent bool
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, headerPresent = r.Header["X-Recall-Source-ID"]
+		headerPresent = r.Header.Get("X-Recall-Source-ID") != ""
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(&HealthResponse{Status: "ok"})
 	}))

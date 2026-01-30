@@ -634,7 +634,7 @@ func TestSyncer_SourceIDHeader_OmittedWhenEmpty(t *testing.T) {
 
 	var headerPresent bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, headerPresent = r.Header["X-Recall-Source-ID"]
+		headerPresent = r.Header.Get("X-Recall-Source-ID") != ""
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"accepted":1,"merged":0,"rejected":0,"errors":[]}`))
 	}))
@@ -673,7 +673,7 @@ func TestSyncer_SourceIDHeader_OmittedWhenWhitespaceOnly(t *testing.T) {
 
 	var headerPresent bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, headerPresent = r.Header["X-Recall-Source-ID"]
+		headerPresent = r.Header.Get("X-Recall-Source-ID") != ""
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"accepted":1,"merged":0,"rejected":0,"errors":[]}`))
 	}))
