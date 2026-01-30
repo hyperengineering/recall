@@ -164,6 +164,27 @@ func TestWithDefaults_PreservesExplicitLocalPath(t *testing.T) {
 	}
 }
 
+// TestConfigFromEnv_WithDefaults_AppliesLocalPath verifies the common usage pattern.
+// Story 5.5: ConfigFromEnv().WithDefaults() should fill ./data/lore.db when env is unset.
+func TestConfigFromEnv_WithDefaults_AppliesLocalPath(t *testing.T) {
+	// Save and clear env
+	origPath := os.Getenv("RECALL_DB_PATH")
+	_ = os.Unsetenv("RECALL_DB_PATH")
+	defer func() {
+		if origPath == "" {
+			_ = os.Unsetenv("RECALL_DB_PATH")
+		} else {
+			_ = os.Setenv("RECALL_DB_PATH", origPath)
+		}
+	}()
+
+	cfg := recall.ConfigFromEnv().WithDefaults()
+	want := "./data/lore.db"
+	if cfg.LocalPath != want {
+		t.Errorf("ConfigFromEnv().WithDefaults().LocalPath = %q, want %q", cfg.LocalPath, want)
+	}
+}
+
 func TestConfig_IsOffline_EmptyEngramURL(t *testing.T) {
 	// Offline mode is now derived from EngramURL being empty.
 	// Resolves DD-6 ambiguity from Epic 1.

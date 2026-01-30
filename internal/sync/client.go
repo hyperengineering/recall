@@ -35,14 +35,17 @@ type EngramClient interface {
 type HTTPClient struct {
 	baseURL    string
 	apiKey     string
+	sourceID   string
 	httpClient *http.Client
 }
 
 // NewHTTPClient creates a new Engram HTTP client.
-func NewHTTPClient(engramURL, apiKey string) *HTTPClient {
+// sourceID is optional; if non-empty, it's sent as X-Recall-Source-ID header for observability.
+func NewHTTPClient(engramURL, apiKey, sourceID string) *HTTPClient {
 	return &HTTPClient{
-		baseURL: strings.TrimSuffix(engramURL, "/"),
-		apiKey:  apiKey,
+		baseURL:  strings.TrimSuffix(engramURL, "/"),
+		apiKey:   apiKey,
+		sourceID: sourceID,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -58,6 +61,9 @@ func (c *HTTPClient) WithHTTPClient(client *http.Client) *HTTPClient {
 func (c *HTTPClient) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("User-Agent", "recall-client/1.0")
+	if strings.TrimSpace(c.sourceID) != "" {
+		req.Header.Set("X-Recall-Source-ID", c.sourceID)
+	}
 }
 
 func newSyncError(op string, statusCode int, body []byte) *recall.SyncError {

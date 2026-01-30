@@ -529,3 +529,201 @@ func TestSyncer_Flush_SetsFlushFlag(t *testing.T) {
 		t.Error("Flush flag should be true in Flush request")
 	}
 }
+
+// ============================================================================
+// Story 4.4: X-Recall-Source-ID Header Tests
+// ============================================================================
+
+// TestSyncer_SourceIDHeader_OnPush verifies X-Recall-Source-ID is sent on push.
+// Story 4.4 AC#4: Header matches source ID in request bodies.
+func TestSyncer_SourceIDHeader_OnPush(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "src",
+	}
+	_ = store.InsertLore(lore)
+
+	var receivedHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Get("X-Recall-Source-ID")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"accepted":1,"merged":0,"rejected":0,"errors":[]}`))
+	}))
+	defer server.Close()
+
+	sourceID := "observability-test-client"
+	syncer := NewSyncer(store, server.URL, "test-key", sourceID)
+
+	err = syncer.Push(context.Background())
+	if err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	if receivedHeader != sourceID {
+		t.Errorf("X-Recall-Source-ID = %q, want %q", receivedHeader, sourceID)
+	}
+}
+
+// TestSyncer_SourceIDHeader_OnBootstrapSnapshot verifies header on snapshot download.
+// Story 4.4 AC#1: Header included in GET /lore/snapshot requests.
+func TestSyncer_SourceIDHeader_OnBootstrapSnapshot(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var receivedHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/health" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"healthy","embedding_model":"test-model"}`))
+			return
+		}
+		if r.URL.Path == "/api/v1/lore/snapshot" {
+			receivedHeader = r.Header.Get("X-Recall-Source-ID")
+			// Return valid SQLite header + empty content (will fail replace, but header is captured)
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write([]byte("SQLite format 3\x00"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	sourceID := "bootstrap-test-client"
+	syncer := NewSyncer(store, server.URL, "test-key", sourceID)
+
+	// Bootstrap will fail on invalid snapshot, but we captured the header
+	_ = syncer.Bootstrap(context.Background())
+
+	if receivedHeader != sourceID {
+		t.Errorf("X-Recall-Source-ID = %q, want %q", receivedHeader, sourceID)
+	}
+}
+
+// TestSyncer_SourceIDHeader_OmittedWhenEmpty verifies header is not sent when empty.
+// Story 4.4 AC#3: Header omitted when source ID is empty.
+func TestSyncer_SourceIDHeader_OmittedWhenEmpty(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "src",
+	}
+	_ = store.InsertLore(lore)
+
+	var headerPresent bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, headerPresent = r.Header["X-Recall-Source-ID"]
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"accepted":1,"merged":0,"rejected":0,"errors":[]}`))
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "") // empty sourceID
+
+	err = syncer.Push(context.Background())
+	if err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	if headerPresent {
+		t.Error("X-Recall-Source-ID should not be present when source ID is empty")
+	}
+}
+
+// TestSyncer_SourceIDHeader_OmittedWhenWhitespaceOnly verifies whitespace-only is treated as empty.
+// Story 4.4: Whitespace-only source ID should not send header.
+func TestSyncer_SourceIDHeader_OmittedWhenWhitespaceOnly(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "src",
+	}
+	_ = store.InsertLore(lore)
+
+	var headerPresent bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, headerPresent = r.Header["X-Recall-Source-ID"]
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"accepted":1,"merged":0,"rejected":0,"errors":[]}`))
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "   ") // whitespace-only sourceID
+
+	err = syncer.Push(context.Background())
+	if err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	if headerPresent {
+		t.Error("X-Recall-Source-ID should not be present when source ID is whitespace-only")
+	}
+}
+
+// TestSyncer_SourceIDHeader_OnFlush verifies header is sent during flush.
+// Story 4.4: Header should be present on all sync requests including flush.
+func TestSyncer_SourceIDHeader_OnFlush(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "src",
+	}
+	_ = store.InsertLore(lore)
+
+	var receivedHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Get("X-Recall-Source-ID")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"accepted":1,"merged":0,"rejected":0,"errors":[]}`))
+	}))
+	defer server.Close()
+
+	sourceID := "flush-test-client"
+	syncer := NewSyncer(store, server.URL, "test-key", sourceID)
+
+	_ = syncer.Flush(context.Background())
+
+	if receivedHeader != sourceID {
+		t.Errorf("X-Recall-Source-ID = %q, want %q", receivedHeader, sourceID)
+	}
+}

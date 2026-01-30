@@ -317,22 +317,22 @@ recall stats
 recall stats --json
 ```
 
-## Configuration
+## Configuration Reference
 
 ### Environment Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `RECALL_DB_PATH` | Yes | Path to local SQLite database |
-| `ENGRAM_URL` | No | URL of Engram central service |
-| `ENGRAM_API_KEY` | No* | API key for Engram (*required if ENGRAM_URL is set) |
-| `RECALL_SOURCE_ID` | No | Client identifier (defaults to hostname) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RECALL_DB_PATH` | `./data/lore.db` | Path to local SQLite database |
+| `ENGRAM_URL` | - | URL of Engram central service |
+| `ENGRAM_API_KEY` | - | API key for Engram (required if ENGRAM_URL is set) |
+| `RECALL_SOURCE_ID` | hostname | Client identifier for observability |
 
 ### Config Struct (Library)
 
 ```go
 type Config struct {
-    LocalPath    string        // Path to local SQLite database (required)
+    LocalPath    string        // Path to local SQLite database (default: ./data/lore.db)
     EngramURL    string        // Central service URL (optional, empty = offline mode)
     APIKey       string        // Engram API key (required if EngramURL is set)
     SourceID     string        // Client identifier (defaults to hostname)
@@ -341,10 +341,11 @@ type Config struct {
 }
 ```
 
-You can also load configuration from environment variables:
+Load configuration with defaults:
 
 ```go
-cfg := recall.ConfigFromEnv() // Reads from RECALL_DB_PATH, ENGRAM_URL, etc.
+cfg := recall.DefaultConfig()                    // All defaults including ./data/lore.db
+cfg := recall.ConfigFromEnv().WithDefaults()     // Env vars with defaults fallback
 ```
 
 ### Offline Mode
@@ -502,14 +503,14 @@ recall --api-key "sk-..." sync push  # Not recommended
 
 ## Troubleshooting
 
-### Missing Configuration
+### Database Directory Permission Error
 
-**Error:** `configuration: LocalPath: required: path to SQLite database — set RECALL_DB_PATH or use --lore-path`
+**Error:** `mkdir ./data: permission denied` or `open ./data/lore.db: permission denied`
 
-**Solution:** Set the required environment variable:
+**Solution:** Recall defaults to `./data/lore.db` in the current directory. If you don't have write permissions, specify a different path:
 
 ```bash
-export RECALL_DB_PATH="./data/lore.db"
+export RECALL_DB_PATH="/path/with/write/access/lore.db"
 ```
 
 ### Offline Mode Errors

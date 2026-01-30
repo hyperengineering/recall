@@ -35,7 +35,7 @@ func TestHTTPClient_HealthCheck_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-api-key")
+	client := NewHTTPClient(server.URL, "test-api-key", "")
 	result, err := client.HealthCheck(context.Background())
 
 	if err != nil {
@@ -56,7 +56,7 @@ func TestHTTPClient_HealthCheck_Unauthorized(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "bad-key")
+	client := NewHTTPClient(server.URL, "bad-key", "")
 	_, err := client.HealthCheck(context.Background())
 
 	if err == nil {
@@ -76,7 +76,7 @@ func TestHTTPClient_HealthCheck_Unauthorized(t *testing.T) {
 }
 
 func TestHTTPClient_HealthCheck_NetworkError(t *testing.T) {
-	client := NewHTTPClient("http://localhost:1", "test-api-key")
+	client := NewHTTPClient("http://localhost:1", "test-api-key", "")
 	_, err := client.HealthCheck(context.Background())
 
 	if err == nil {
@@ -104,7 +104,7 @@ func TestHTTPClient_DownloadSnapshot_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-api-key")
+	client := NewHTTPClient(server.URL, "test-api-key", "")
 	reader, err := client.DownloadSnapshot(context.Background())
 
 	if err != nil {
@@ -128,7 +128,7 @@ func TestHTTPClient_DownloadSnapshot_ServiceUnavailable(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-api-key")
+	client := NewHTTPClient(server.URL, "test-api-key", "")
 	_, err := client.DownloadSnapshot(context.Background())
 
 	if err == nil {
@@ -164,7 +164,7 @@ func TestHTTPClient_PushLore_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-api-key")
+	client := NewHTTPClient(server.URL, "test-api-key", "")
 	req := &PushLoreRequest{
 		SourceID: "test-source",
 		Lore: []LorePayload{
@@ -188,7 +188,7 @@ func TestHTTPClient_PushLore_ValidationError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-api-key")
+	client := NewHTTPClient(server.URL, "test-api-key", "")
 	req := &PushLoreRequest{SourceID: "test", Lore: []LorePayload{}}
 	_, err := client.PushLore(context.Background(), req)
 
@@ -224,7 +224,7 @@ func TestHTTPClient_PushFeedback_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-api-key")
+	client := NewHTTPClient(server.URL, "test-api-key", "")
 	req := &PushFeedbackRequest{
 		SourceID: "test-source",
 		Feedback: []FeedbackPayload{
@@ -251,7 +251,7 @@ func TestHTTPClient_PushFeedback_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-api-key")
+	client := NewHTTPClient(server.URL, "test-api-key", "")
 	req := &PushFeedbackRequest{SourceID: "test", Feedback: []FeedbackPayload{{LoreID: "missing", Type: "helpful"}}}
 	_, err := client.PushFeedback(context.Background(), req)
 
@@ -279,7 +279,7 @@ func TestHTTPClient_AuthorizationHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, apiKey)
+	client := NewHTTPClient(server.URL, apiKey, "")
 	_, _ = client.HealthCheck(context.Background())
 
 	expectedAuth := "Bearer " + apiKey
@@ -298,7 +298,7 @@ func TestHTTPClient_UserAgentHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-key")
+	client := NewHTTPClient(server.URL, "test-key", "")
 	_, _ = client.HealthCheck(context.Background())
 
 	if receivedUA != "recall-client/1.0" {
@@ -316,7 +316,7 @@ func TestHTTPClient_ContentTypeHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-key")
+	client := NewHTTPClient(server.URL, "test-key", "")
 	req := &PushLoreRequest{SourceID: "test", Lore: []LorePayload{{ID: "1", Content: "test", Category: "preference", Confidence: 0.9, CreatedAt: "2024-01-15T10:00:00Z"}}}
 	_, _ = client.PushLore(context.Background(), req)
 
@@ -334,7 +334,7 @@ func TestHTTPClient_ErrorDoesNotContainAPIKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, apiKey)
+	client := NewHTTPClient(server.URL, apiKey, "")
 	_, err := client.HealthCheck(context.Background())
 
 	if err == nil {
@@ -354,7 +354,7 @@ func TestHTTPClient_ContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-key")
+	client := NewHTTPClient(server.URL, "test-key", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
@@ -380,7 +380,7 @@ func TestHTTPClient_ErrorBodyTruncation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-key")
+	client := NewHTTPClient(server.URL, "test-key", "")
 	_, err := client.HealthCheck(context.Background())
 
 	if err == nil {
@@ -412,7 +412,7 @@ func TestHTTPClient_WithHTTPClient(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-key").WithHTTPClient(customClient)
+	client := NewHTTPClient(server.URL, "test-key", "").WithHTTPClient(customClient)
 
 	// Verify the custom client is used by checking it works
 	result, err := client.HealthCheck(context.Background())
@@ -429,5 +429,91 @@ func TestHTTPClient_WithHTTPClient(t *testing.T) {
 	}
 	if client.httpClient.Timeout != customTimeout {
 		t.Errorf("Timeout = %v, want %v", client.httpClient.Timeout, customTimeout)
+	}
+}
+
+// TestHTTPClient_SourceIDHeader_WhenConfigured verifies X-Recall-Source-ID header is sent.
+// Story 4.4 AC#1: Header included when source ID is configured.
+func TestHTTPClient_SourceIDHeader_WhenConfigured(t *testing.T) {
+	sourceID := "test-client-123"
+	var receivedHeader string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Get("X-Recall-Source-ID")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&HealthResponse{Status: "ok"})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-key", sourceID)
+	_, _ = client.HealthCheck(context.Background())
+
+	if receivedHeader != sourceID {
+		t.Errorf("X-Recall-Source-ID = %q, want %q", receivedHeader, sourceID)
+	}
+}
+
+// TestHTTPClient_SourceIDHeader_OmittedWhenEmpty verifies header is not sent when source ID is empty.
+// Story 4.4 AC#3: Header omitted when source ID is empty (graceful degradation).
+func TestHTTPClient_SourceIDHeader_OmittedWhenEmpty(t *testing.T) {
+	var headerPresent bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, headerPresent = r.Header["X-Recall-Source-ID"]
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&HealthResponse{Status: "ok"})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-key", "") // empty sourceID
+	_, _ = client.HealthCheck(context.Background())
+
+	if headerPresent {
+		t.Error("X-Recall-Source-ID should not be present when source ID is empty")
+	}
+}
+
+// TestHTTPClient_SourceIDHeader_OmittedWhenWhitespaceOnly verifies whitespace-only is treated as empty.
+// Story 4.4: Whitespace-only source ID should not send header.
+func TestHTTPClient_SourceIDHeader_OmittedWhenWhitespaceOnly(t *testing.T) {
+	var headerPresent bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, headerPresent = r.Header["X-Recall-Source-ID"]
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&HealthResponse{Status: "ok"})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-key", "   ") // whitespace-only sourceID
+	_, _ = client.HealthCheck(context.Background())
+
+	if headerPresent {
+		t.Error("X-Recall-Source-ID should not be present when source ID is whitespace-only")
+	}
+}
+
+// TestHTTPClient_SourceIDHeader_OnSnapshot verifies header is sent on snapshot requests.
+// Story 4.4 AC#1: X-Recall-Source-ID in GET /lore/snapshot requests.
+func TestHTTPClient_SourceIDHeader_OnSnapshot(t *testing.T) {
+	sourceID := "snapshot-client"
+	var receivedHeader string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Get("X-Recall-Source-ID")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte("snapshot data"))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-key", sourceID)
+	reader, err := client.DownloadSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = reader.Close()
+
+	if receivedHeader != sourceID {
+		t.Errorf("X-Recall-Source-ID = %q, want %q", receivedHeader, sourceID)
 	}
 }

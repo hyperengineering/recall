@@ -14,10 +14,10 @@ info:
     name: MIT
 
 servers:
-  - url: https://engram.fly.dev/api/v1
-    description: Production
   - url: http://localhost:8080/api/v1
     description: Local development
+  - url: https://your-engram-instance.example.com/api/v1
+    description: Production (replace with your deployment URL)
 
 tags:
   - name: Health
@@ -115,6 +115,17 @@ paths:
         Returns a SQLite database file containing all lore entries with
         embeddings for client-side semantic search.
       operationId: getSnapshot
+      parameters:
+        - name: X-Recall-Source-ID
+          in: header
+          required: false
+          schema:
+            type: string
+            example: "devcontainer-abc123"
+          description: |
+            Client source identifier for observability and logging.
+            Should match the source_id used in ingest and feedback requests.
+            When provided, enables per-client activity tracking in server logs.
       responses:
         '200':
           description: SQLite database snapshot
@@ -148,6 +159,16 @@ paths:
         the response for the next delta request.
       operationId: getDelta
       parameters:
+        - name: X-Recall-Source-ID
+          in: header
+          required: false
+          schema:
+            type: string
+            example: "devcontainer-abc123"
+          description: |
+            Client source identifier for observability and logging.
+            Should match the source_id used in ingest and feedback requests.
+            When provided, enables per-client activity tracking in server logs.
         - name: since
           in: query
           required: true

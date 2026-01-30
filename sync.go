@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -522,4 +523,7 @@ func (s *Syncer) Flush(ctx context.Context) error {
 func (s *Syncer) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
 	req.Header.Set("User-Agent", "recall-client/1.0")
+	if strings.TrimSpace(s.sourceID) != "" {
+		req.Header.Set("X-Recall-Source-ID", s.sourceID)
+	}
 }
