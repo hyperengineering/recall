@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  workspace:
+    image: mcr.microsoft.com/devcontainers/go:1-1.23-bookworm
+    volumes:
+      - ..:/workspaces/recall:cached
+      - go-mod-cache:/go/pkg/mod
+    command: sleep infinity
+    environment:
+      - RECALL_LORE_PATH=/workspaces/recall/data/lore.db
+      - ENGRAM_URL=${ENGRAM_URL:-http://localhost:8080}
+      - ENGRAM_API_KEY=${ENGRAM_API_KEY}
+
+volumes:
+  go-mod-cache:
