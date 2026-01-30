@@ -539,14 +539,36 @@ Or accept offline-only mode — local operations (record, query, feedback) work 
 
 ## MCP Integration
 
-Recall provides MCP (Model Context Protocol) tools for integration with AI coding agents like Claude Code.
+Recall provides an MCP (Model Context Protocol) server for integration with AI coding agents like Claude Code.
 
 **Available tools:**
-- `recall_query` - Retrieve relevant lore based on semantic similarity
+- `recall_query` - Retrieve relevant lore with session references (L1, L2, ...)
 - `recall_record` - Capture new lore with content, category, and optional context
-- `recall_feedback` - Provide feedback (helpful/incorrect/not_relevant) on recalled lore
+- `recall_feedback` - Provide feedback using session references
+- `recall_sync` - Push pending changes to Engram
 
-**Quick setup for coding agents:**
+### MCP Server Quick Start
+
+Add Recall to your Claude Code configuration (`~/.claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "recall": {
+      "command": "recall",
+      "args": ["mcp"],
+      "env": {
+        "RECALL_DB_PATH": "/path/to/your/lore.db",
+        "RECALL_SOURCE_ID": "claude-code"
+      }
+    }
+  }
+}
+```
+
+The MCP server maintains session state, so L1, L2, etc. references persist throughout your coding session.
+
+### CLI-based Workflow (Alternative)
 
 ```bash
 # Set environment variables
@@ -562,18 +584,6 @@ recall record --content "Queue consumers benefit from idempotency checks" \
 
 # Provide feedback on recalled lore
 recall feedback --helpful L1,L3 --not-relevant L2
-```
-
-**Go library integration:**
-
-```go
-import (
-    "github.com/hyperengineering/recall"
-    recallmcp "github.com/hyperengineering/recall/mcp"
-)
-
-client, _ := recall.New(cfg)
-recallmcp.RegisterTools(mcpRegistry, client)
 ```
 
 See [docs/mcp-integration.md](docs/mcp-integration.md) for comprehensive configuration and usage patterns.

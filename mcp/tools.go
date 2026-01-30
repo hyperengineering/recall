@@ -1,5 +1,18 @@
 // Package mcp provides optional MCP (Model Context Protocol) tool adapters for Recall.
 // This package allows Recall to be integrated with MCP-compatible agent frameworks.
+//
+// This package offers two approaches:
+//
+// 1. Full MCP Server (server.go) - RECOMMENDED
+//    Use NewServer() for a complete MCP server implementation using mcp-go.
+//    This provides full MCP protocol support with stdio transport.
+//
+// 2. Registry Pattern (tools.go) - LEGACY/ALTERNATIVE
+//    Use RegisterTools() for framework-agnostic integration where you
+//    provide your own MCP registry implementation. This is useful for
+//    custom agent frameworks that already have MCP infrastructure.
+//
+// For most use cases, prefer the full MCP server approach.
 package mcp
 
 import (
@@ -42,6 +55,14 @@ type Handler func(ctx context.Context, params json.RawMessage) (interface{}, err
 
 // RegisterTools registers Recall tools with an MCP registry.
 // This is optional — Recall can be used without MCP.
+//
+// NOTE: For most use cases, prefer NewServer() which provides a complete
+// MCP server implementation. Use RegisterTools only if you need to integrate
+// with a custom MCP registry/framework that doesn't use the standard mcp-go
+// server approach.
+//
+// The tools registered here mirror those in server.go but use your own
+// registry interface for maximum flexibility.
 func RegisterTools(registry Registry, client *recall.Client) {
 	registry.Register(Tool{
 		Name:        "recall_query",

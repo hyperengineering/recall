@@ -436,6 +436,7 @@ func (s *Store) ApplyFeedbackBatch(session *Session, params FeedbackParams) (*Fe
 	for _, ref := range params.Helpful {
 		id, ok := session.FuzzyMatch(ref, contentLookup)
 		if !ok {
+			result.NotFound = append(result.NotFound, ref)
 			continue
 		}
 		update, err := s.adjustConfidence(id, ConfidenceHelpfulDelta, true, now)
@@ -448,6 +449,7 @@ func (s *Store) ApplyFeedbackBatch(session *Session, params FeedbackParams) (*Fe
 	for _, ref := range params.Incorrect {
 		id, ok := session.FuzzyMatch(ref, contentLookup)
 		if !ok {
+			result.NotFound = append(result.NotFound, ref)
 			continue
 		}
 		update, err := s.adjustConfidence(id, ConfidenceIncorrectDelta, false, now)
@@ -456,7 +458,14 @@ func (s *Store) ApplyFeedbackBatch(session *Session, params FeedbackParams) (*Fe
 		}
 	}
 
-	// not_relevant: no adjustment needed
+	// Process not_relevant feedback - track as not found if ref doesn't exist
+	for _, ref := range params.NotRelevant {
+		_, ok := session.FuzzyMatch(ref, contentLookup)
+		if !ok {
+			result.NotFound = append(result.NotFound, ref)
+		}
+		// not_relevant: no adjustment needed when found
+	}
 
 	return result, nil
 }

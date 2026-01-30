@@ -117,7 +117,8 @@ type FeedbackParams struct {
 
 // FeedbackResult contains the results of applying feedback.
 type FeedbackResult struct {
-	Updated []FeedbackUpdate `json:"updated"`
+	Updated  []FeedbackUpdate `json:"updated"`
+	NotFound []string         `json:"not_found,omitempty"` // Refs that weren't found
 }
 
 // FeedbackUpdate describes a single confidence update.

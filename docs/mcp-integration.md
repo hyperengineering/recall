@@ -96,7 +96,7 @@ At least one of `helpful`, `not_relevant`, or `incorrect` must be provided.
 
 ## Configuration for Claude Code
 
-### Option 1: CLI-based MCP Server (Recommended)
+### Option 1: MCP Server (Recommended)
 
 Add Recall to your Claude Code MCP configuration in `~/.claude/claude_desktop_config.json`:
 
@@ -105,7 +105,7 @@ Add Recall to your Claude Code MCP configuration in `~/.claude/claude_desktop_co
   "mcpServers": {
     "recall": {
       "command": "recall",
-      "args": ["mcp", "serve"],
+      "args": ["mcp"],
       "env": {
         "RECALL_DB_PATH": "/path/to/your/lore.db",
         "RECALL_SOURCE_ID": "claude-code"
@@ -115,9 +115,34 @@ Add Recall to your Claude Code MCP configuration in `~/.claude/claude_desktop_co
 }
 ```
 
-**Note:** The `recall mcp serve` command is planned for a future release. For now, use Option 2.
+With Engram sync enabled:
 
-### Option 2: CLI Tool Integration (Current)
+```json
+{
+  "mcpServers": {
+    "recall": {
+      "command": "recall",
+      "args": ["mcp"],
+      "env": {
+        "RECALL_DB_PATH": "/path/to/your/lore.db",
+        "RECALL_SOURCE_ID": "claude-code",
+        "ENGRAM_URL": "https://engram.example.com",
+        "ENGRAM_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+The MCP server provides four tools:
+- `recall_query` - Retrieve relevant lore with session references (L1, L2, ...)
+- `recall_record` - Capture new lore
+- `recall_feedback` - Adjust confidence using session references
+- `recall_sync` - Push pending changes to Engram
+
+**Session persistence:** The MCP server maintains a single client instance, so session references (L1, L2) remain valid throughout your coding session. This enables the query → work → feedback loop within a single session.
+
+### Option 2: CLI Tool Integration (Fallback)
 
 Until the MCP server is available, configure Claude Code to use Recall via CLI commands.
 
@@ -163,7 +188,6 @@ import (
 
     "github.com/hyperengineering/recall"
     recallmcp "github.com/hyperengineering/recall/mcp"
-    "golang.org/x/tools/internal/mcp"
 )
 
 func main() {
@@ -177,11 +201,8 @@ func main() {
     }
     defer client.Close()
 
-    // Create MCP server
-    server := mcp.NewServer("recall", "1.0.0")
-
-    // Register Recall tools
-    recallmcp.RegisterTools(server, client)
+    // Create MCP server with Recall tools
+    server := recallmcp.NewServer(client)
 
     // Run server over stdio
     if err := server.Run(); err != nil {
@@ -315,7 +336,9 @@ A complete learning cycle within a coding session:
 
 ### Session references (L1, L2) not working
 
-Session references are valid only within the current session. Each CLI invocation is a separate session. For persistent references, use the full lore ID.
+**MCP Server:** Session references persist for the lifetime of the MCP server process. When Claude Code restarts, a new server starts with a fresh session.
+
+**CLI mode:** Each CLI invocation is a separate session. For persistent references, use the full lore ID.
 
 ### Sync failures
 
