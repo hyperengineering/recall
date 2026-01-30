@@ -44,3 +44,20 @@ data/
 # Temporary files
 tmp/
 temp/
+
+# Build caches
+.cache/
+.go/
+.gomodcache/
+.gopath/
+
+# BMAD artifacts
+_bmad/
+_bmad-output/
+
+# AI assistant artifacts
+.claude/
+.opencode/
+
+# Built binary
+recall
