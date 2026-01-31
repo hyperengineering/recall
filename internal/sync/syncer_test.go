@@ -13,13 +13,20 @@ import (
 
 // mockEngramClient implements EngramClient for testing.
 type mockEngramClient struct {
-	healthCheckFn      func(ctx context.Context) (*HealthResponse, error)
-	downloadSnapshotFn func(ctx context.Context) (io.ReadCloser, error)
-	pushLoreFn         func(ctx context.Context, req *PushLoreRequest) (*PushLoreResponse, error)
-	pushFeedbackFn     func(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
-	getDeltaFn         func(ctx context.Context, since time.Time) (*DeltaResult, error)
-	listStoresFn       func(ctx context.Context, prefix string) (*ListStoresResponse, error)
-	getStoreInfoFn     func(ctx context.Context, storeID string) (*StoreInfoResponse, error)
+	healthCheckFn              func(ctx context.Context) (*HealthResponse, error)
+	downloadSnapshotFn         func(ctx context.Context) (io.ReadCloser, error)
+	pushLoreFn                 func(ctx context.Context, req *PushLoreRequest) (*PushLoreResponse, error)
+	pushFeedbackFn             func(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
+	getDeltaFn                 func(ctx context.Context, since time.Time) (*DeltaResult, error)
+	listStoresFn               func(ctx context.Context, prefix string) (*ListStoresResponse, error)
+	getStoreInfoFn             func(ctx context.Context, storeID string) (*StoreInfoResponse, error)
+	createStoreFn              func(ctx context.Context, req *CreateStoreRequest) (*CreateStoreResponse, error)
+	deleteStoreFn              func(ctx context.Context, storeID string) error
+	pushLoreToStoreFn          func(ctx context.Context, storeID string, req *PushLoreRequest) (*PushLoreResponse, error)
+	downloadSnapshotFromStoreFn func(ctx context.Context, storeID string) (io.ReadCloser, error)
+	getDeltaFromStoreFn        func(ctx context.Context, storeID string, since time.Time) (*DeltaResult, error)
+	pushFeedbackToStoreFn      func(ctx context.Context, storeID string, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
+	deleteLoreFromStoreFn      func(ctx context.Context, storeID, loreID string) error
 }
 
 func (m *mockEngramClient) HealthCheck(ctx context.Context) (*HealthResponse, error) {
@@ -69,6 +76,55 @@ func (m *mockEngramClient) GetStoreInfo(ctx context.Context, storeID string) (*S
 		return m.getStoreInfoFn(ctx, storeID)
 	}
 	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) CreateStore(ctx context.Context, req *CreateStoreRequest) (*CreateStoreResponse, error) {
+	if m.createStoreFn != nil {
+		return m.createStoreFn(ctx, req)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) DeleteStore(ctx context.Context, storeID string) error {
+	if m.deleteStoreFn != nil {
+		return m.deleteStoreFn(ctx, storeID)
+	}
+	return errors.New("not implemented")
+}
+
+func (m *mockEngramClient) PushLoreToStore(ctx context.Context, storeID string, req *PushLoreRequest) (*PushLoreResponse, error) {
+	if m.pushLoreToStoreFn != nil {
+		return m.pushLoreToStoreFn(ctx, storeID, req)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) DownloadSnapshotFromStore(ctx context.Context, storeID string) (io.ReadCloser, error) {
+	if m.downloadSnapshotFromStoreFn != nil {
+		return m.downloadSnapshotFromStoreFn(ctx, storeID)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) GetDeltaFromStore(ctx context.Context, storeID string, since time.Time) (*DeltaResult, error) {
+	if m.getDeltaFromStoreFn != nil {
+		return m.getDeltaFromStoreFn(ctx, storeID, since)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) PushFeedbackToStore(ctx context.Context, storeID string, req *PushFeedbackRequest) (*PushFeedbackResponse, error) {
+	if m.pushFeedbackToStoreFn != nil {
+		return m.pushFeedbackToStoreFn(ctx, storeID, req)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) DeleteLoreFromStore(ctx context.Context, storeID, loreID string) error {
+	if m.deleteLoreFromStoreFn != nil {
+		return m.deleteLoreFromStoreFn(ctx, storeID, loreID)
+	}
+	return errors.New("not implemented")
 }
 
 // mockSyncStore implements SyncStore for testing.
