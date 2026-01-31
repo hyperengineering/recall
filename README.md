@@ -73,6 +73,46 @@ recall feedback --helpful L1 --not-relevant L2
 
 That's it. Recall now remembers that insight for future sessions.
 
+## Multi-Store Support
+
+Recall supports multiple isolated knowledge stores for different projects, teams, or contexts.
+
+### Create a project-specific store
+
+```bash
+recall store create my-project --description "My project knowledge base"
+```
+
+### Use the store
+
+```bash
+# Set as default for this session
+export ENGRAM_STORE=my-project
+
+# Or specify per-command
+recall record --content "API uses JWT tokens" --category DEPENDENCY_BEHAVIOR --store my-project
+recall query "authentication" --store my-project
+```
+
+### List and manage stores
+
+```bash
+recall store list                    # List all local stores
+recall store info my-project         # Show store statistics
+recall store export my-project -o backup.json   # Backup a store
+recall store import my-project -i backup.json   # Restore from backup
+recall store delete old-project --confirm       # Delete a store
+```
+
+### Store Resolution
+
+When `--store` is not specified, Recall resolves the store using:
+
+1. `ENGRAM_STORE` environment variable
+2. Falls back to `default` store
+
+The `default` store provides zero-config quick start—you can use Recall immediately without creating stores.
+
 ## Using with Claude Code (MCP)
 
 The most common use case is integrating Recall with AI coding assistants via MCP (Model Context Protocol).
@@ -94,11 +134,15 @@ Add to `~/.claude/claude_desktop_config.json`:
 }
 ```
 
-This gives Claude Code four tools:
+This gives Claude Code six tools:
 - `recall_query` — Search for relevant lore before starting work
 - `recall_record` — Capture insights during implementation
 - `recall_feedback` — Mark what helped (or didn't)
 - `recall_sync` — Push to Engram for team sharing
+- `recall_store_list` — List available knowledge stores
+- `recall_store_info` — Get store details and statistics
+
+All tools accept an optional `store` parameter to target a specific store.
 
 See [MCP Integration Guide](docs/mcp-integration.md) for detailed configuration and usage patterns.
 
@@ -161,7 +205,8 @@ recall sync bootstrap
 
 | Option | Environment Variable | Default | Description |
 |--------|---------------------|---------|-------------|
-| `--lore-path` | `RECALL_DB_PATH` | `./data/lore.db` | Local database path |
+| `--store` | `ENGRAM_STORE` | `default` | Target store for operations |
+| `--lore-path` | `RECALL_DB_PATH` | `./data/lore.db` | Local database path (deprecated) |
 | `--engram-url` | `ENGRAM_URL` | — | Engram service URL |
 | `--api-key` | `ENGRAM_API_KEY` | — | Engram API key |
 | `--source-id` | `RECALL_SOURCE_ID` | hostname | Client identifier |
@@ -273,6 +318,56 @@ Run as MCP server (for AI agent integration).
 recall mcp
 ```
 
+#### `recall store`
+
+Manage local and remote lore stores.
+
+```bash
+recall store list                          # List local stores
+recall store list --remote                 # List stores from Engram
+recall store create <id> [--description]   # Create a store (local + remote)
+recall store info [id]                     # Show store details
+recall store delete <id> --confirm         # Delete a store
+recall store export <id> -o <file>         # Export store data
+recall store import <id> -i <file>         # Import store data
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List stores (`--remote` for Engram stores) |
+| `create` | Create a store locally and on Engram (if configured) |
+| `info` | Display store statistics (lore count, categories, confidence) |
+| `delete` | Delete a store (requires `--confirm`, use `--force` to skip prompt) |
+| `export` | Export store to JSON or SQLite file |
+| `import` | Import from export file with merge strategies |
+
+**Remote store operations (requires Engram):**
+
+```bash
+# List stores from Engram server
+recall store list --remote
+
+# Create store both locally and on Engram
+recall store create my-project --description "My project"
+
+# Delete store locally and from Engram
+recall store delete my-project --confirm --force
+```
+
+**Export/Import options:**
+
+```bash
+# Export formats
+recall store export my-project -o backup.json           # JSON (default)
+recall store export my-project -o backup.db --format sqlite  # SQLite
+
+# Import with merge strategies
+recall store import my-project -i backup.json                    # Merge (default)
+recall store import my-project -i backup.json --merge-strategy skip    # Skip existing
+recall store import my-project -i backup.json --merge-strategy replace # Replace existing
+recall store import my-project -i backup.json --dry-run          # Preview changes
+```
+
 ## Lore Categories
 
 | Category | Use For | Example |
@@ -349,18 +444,22 @@ func main() {
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RECALL_DB_PATH` | `./data/lore.db` | Local database path |
+| `RECALL_DB_PATH` | `./data/lore.db` | Local database path (deprecated, use stores) |
+| `ENGRAM_STORE` | `default` | Target store for operations |
 | `ENGRAM_URL` | — | Engram service URL (empty = offline mode) |
 | `ENGRAM_API_KEY` | — | API key (required if ENGRAM_URL set) |
 | `RECALL_SOURCE_ID` | hostname | Client identifier |
 | `RECALL_DEBUG` | — | Enable debug logging (any non-empty value) |
 | `RECALL_DEBUG_LOG` | stderr | Path to debug log file |
 
+**Note:** Multi-store databases are stored in `~/.recall/stores/{store-id}/lore.db`. The `RECALL_DB_PATH` variable is deprecated but still supported for backward compatibility.
+
 ### Config Struct
 
 ```go
 type Config struct {
-    LocalPath    string        // Database path (default: ./data/lore.db)
+    LocalPath    string        // Database path (deprecated, use Store)
+    Store        string        // Store ID (default: resolved via ENGRAM_STORE or "default")
     EngramURL    string        // Engram URL (empty = offline)
     APIKey       string        // Engram API key
     SourceID     string        // Client ID (default: hostname)
@@ -425,7 +524,8 @@ Use one of the eight categories listed above (case-sensitive).
 ## Documentation
 
 - [MCP Integration Guide](docs/mcp-integration.md) — Claude Code and AI agent setup
-- [Engram API Specification](docs/engram-api-specification.md) — Central service API reference
+- [Multi-Store Technical Design](docs/recall-multi-store-technical-design.md) — Multi-store architecture
+- [Engram API Specification](docs/engram-openapi.yaml) — Central service OpenAPI spec
 - [Technical Design](docs/engram-recall.md) — Architecture and implementation details
 
 ## Development

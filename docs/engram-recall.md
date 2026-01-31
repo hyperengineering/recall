@@ -2,8 +2,8 @@
 
 > **Purpose:** Enable AI agents to accumulate, persist, and recall experiential knowledge (lore) across sessions, projects, and distributed development environments.
 
-**Version:** 1.0
-**Status:** MVP Complete
+**Version:** 1.1
+**Status:** Multi-Store Support Complete
 
 ---
 
@@ -424,9 +424,25 @@ Rationale:
 - [x] JSON output mode
 - [x] Comprehensive test coverage
 
-### Planned (Post-MVP)
+### Completed (Multi-Store Support)
 
-- [ ] Delta sync (incremental pull)
+- [x] Multi-store infrastructure (`~/.recall/stores/{id}/lore.db`)
+- [x] Store ID validation and resolution chain
+- [x] CLI store lifecycle commands (list, create, delete, info)
+- [x] CLI store export/import with merge strategies
+- [x] MCP store parameter on all tools
+- [x] MCP store discovery tools (recall_store_list, recall_store_info)
+- [x] Global session tracking across stores
+- [x] Auto-migration from legacy single-store databases
+- [x] CLI output polish with lipgloss styling
+- [x] Delta sync (incremental pull)
+- [x] Engram multi-store API integration (store-prefixed endpoints)
+- [x] Remote store management (`--remote` flag for listing Engram stores)
+- [x] Dual-location store create/delete (local + Engram)
+- [x] Store ID URL encoding for path-style IDs (org/team → org%2Fengram)
+
+### Planned (Future)
+
 - [ ] HNSW indexing for >5,000 entries
 - [ ] Confidence decay for stale lore
 - [ ] Passive injection helpers

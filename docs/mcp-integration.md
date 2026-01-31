@@ -15,7 +15,6 @@ Add Recall to your Claude Code configuration:
       "command": "recall",
       "args": ["mcp"],
       "env": {
-        "RECALL_DB_PATH": "/Users/yourname/.recall/lore.db",
         "RECALL_SOURCE_ID": "claude-code"
       }
     }
@@ -23,7 +22,28 @@ Add Recall to your Claude Code configuration:
 }
 ```
 
-Restart Claude Code. You now have four new tools available.
+Restart Claude Code. You now have six tools available.
+
+### Multi-Store Configuration
+
+To target a specific store by default:
+
+```json
+{
+  "mcpServers": {
+    "recall": {
+      "command": "recall",
+      "args": ["mcp"],
+      "env": {
+        "ENGRAM_STORE": "my-project",
+        "RECALL_SOURCE_ID": "claude-code"
+      }
+    }
+  }
+}
+```
+
+Or specify `store` per-tool-call to query different knowledge bases.
 
 ## MCP Tools
 
@@ -39,6 +59,7 @@ Search for relevant lore before starting work.
 | `k` | integer | No | 5 | Max results |
 | `min_confidence` | number | No | 0.5 | Minimum confidence (0.0–1.0) |
 | `categories` | array | No | all | Filter by categories |
+| `store` | string | No | resolved | Target store ID |
 
 **Example:**
 
@@ -47,11 +68,12 @@ Search for relevant lore before starting work.
   "query": "error handling patterns",
   "k": 5,
   "min_confidence": 0.6,
-  "categories": ["PATTERN_OUTCOME", "INTERFACE_LESSON"]
+  "categories": ["PATTERN_OUTCOME", "INTERFACE_LESSON"],
+  "store": "my-project"
 }
 ```
 
-**Returns:** Array of lore entries with session references (L1, L2, L3...) for use with feedback.
+**Returns:** Array of lore entries with session references (L1, L2, L3...) for use with feedback. Session references are global across all stores queried in a session.
 
 ### recall_record
 
@@ -65,6 +87,7 @@ Capture insights during implementation.
 | `category` | string | Yes | — | Category (see below) |
 | `context` | string | No | — | Where this was learned |
 | `confidence` | number | No | 0.5 | Initial confidence (0.0–1.0) |
+| `store` | string | No | resolved | Target store ID |
 
 **Categories:**
 
@@ -84,7 +107,8 @@ Capture insights during implementation.
   "content": "SQLite WAL mode improves concurrent read performance significantly",
   "category": "PERFORMANCE_INSIGHT",
   "context": "story-4.2-database-optimization",
-  "confidence": 0.8
+  "confidence": 0.8,
+  "store": "my-project"
 }
 ```
 
@@ -99,6 +123,7 @@ Mark which lore helped (or didn't) to improve future recommendations.
 | `helpful` | array | No | Session refs of useful lore (+0.08 confidence) |
 | `not_relevant` | array | No | Didn't apply to this context (no change) |
 | `incorrect` | array | No | Wrong or misleading (-0.15 confidence) |
+| `store` | string | No | Target store (only needed for direct lore IDs) |
 
 At least one parameter required.
 
@@ -112,14 +137,98 @@ At least one parameter required.
 }
 ```
 
+**Note:** When using session references (L1, L2, etc.), the store is automatically resolved—feedback routes to the correct store where each lore entry was originally queried. The `store` parameter is only needed when providing direct lore IDs instead of session references.
+
 ### recall_sync
 
-Push local changes to Engram for team sharing (requires Engram configuration).
+Synchronize local lore with Engram for team sharing (requires Engram configuration).
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `direction` | string | No | "both" | Sync direction: "pull", "push", or "both" |
+| `store` | string | No | resolved | Target store ID |
 
 **Example:**
 
 ```json
-{}
+{
+  "direction": "push",
+  "store": "my-project"
+}
+```
+
+### recall_store_list
+
+List available stores. This is a read-only operation for discovering knowledge bases.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `prefix` | string | No | Filter stores by path prefix (e.g., "team/") |
+
+**Example:**
+
+```json
+{
+  "prefix": "neuralmux/"
+}
+```
+
+**Returns:**
+```
+Available stores (3):
+
+  default
+    Description: Default store for quick start
+    Lore: 1,234 entries | Updated: 2h ago
+
+  neuralmux/engram
+    Description: Engram project knowledge base
+    Lore: 567 entries | Updated: 15m ago
+
+  acme/api-service
+    Description: API service patterns
+    Lore: 89 entries | Updated: 3d ago
+```
+
+### recall_store_info
+
+Get detailed information about a specific store. Read-only operation for inspecting store metadata and statistics.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `store` | string | No | resolved | Store ID to inspect |
+
+**Example:**
+
+```json
+{
+  "store": "my-project"
+}
+```
+
+**Returns:**
+```
+Store: my-project
+Description: My project knowledge base
+Created: 2026-01-20 14:00:00 UTC
+Updated: 2026-01-31 12:00:00 UTC
+
+Statistics:
+  Lore Count: 567
+  Average Confidence: 0.72
+  Validated Entries: 234 (41.3%)
+
+Category Distribution:
+  PATTERN_OUTCOME        145 (25.6%)
+  DEPENDENCY_BEHAVIOR     98 (17.3%)
+  ARCHITECTURAL_DECISION  87 (15.3%)
+  ...
 ```
 
 ## Typical Workflow
@@ -160,7 +269,7 @@ Push local changes to Engram for team sharing (requires Engram configuration).
 
 ### Basic (Offline Only)
 
-Works without any external service:
+Works without any external service, using the default store:
 
 ```json
 {
@@ -169,7 +278,26 @@ Works without any external service:
       "command": "recall",
       "args": ["mcp"],
       "env": {
-        "RECALL_DB_PATH": "/Users/yourname/.recall/lore.db"
+        "RECALL_SOURCE_ID": "claude-code"
+      }
+    }
+  }
+}
+```
+
+### Project-Specific Store
+
+Target a specific knowledge base for your project:
+
+```json
+{
+  "mcpServers": {
+    "recall": {
+      "command": "recall",
+      "args": ["mcp"],
+      "env": {
+        "ENGRAM_STORE": "my-project",
+        "RECALL_SOURCE_ID": "claude-code"
       }
     }
   }
@@ -187,7 +315,7 @@ Share lore across environments:
       "command": "recall",
       "args": ["mcp"],
       "env": {
-        "RECALL_DB_PATH": "/Users/yourname/.recall/lore.db",
+        "ENGRAM_STORE": "team/project",
         "RECALL_SOURCE_ID": "claude-code-macbook",
         "ENGRAM_URL": "https://engram.example.com",
         "ENGRAM_API_KEY": "your-api-key"
@@ -206,8 +334,8 @@ Share lore across environments:
       "command": "docker",
       "args": [
         "run", "--rm", "-i",
-        "-v", "/Users/yourname/.recall:/data",
-        "-e", "RECALL_DB_PATH=/data/lore.db",
+        "-v", "/Users/yourname/.recall:/root/.recall",
+        "-e", "ENGRAM_STORE=my-project",
         "ghcr.io/hyperengineering/recall:latest",
         "mcp"
       ]
@@ -224,6 +352,7 @@ These references:
 - Are valid for the current MCP server session
 - Reset when Claude Code restarts
 - Can be used with `recall_feedback` to mark what helped
+- Are **global across stores**—if you query store A (gets L1-L3) then store B (gets L4-L5), feedback on L4 automatically routes to store B
 
 If you need to reference lore after a restart, use the full lore ID instead.
 
@@ -289,16 +418,19 @@ For persistent references, use the full lore ID (shown in query results).
 
 ## Database Locations
 
-Recommended paths by platform:
+With multi-store support, each store has its own database:
 
-| Platform | Path |
-|----------|------|
-| macOS | `~/.recall/lore.db` |
-| Linux | `~/.local/share/recall/lore.db` |
-| Windows | `%APPDATA%\recall\lore.db` |
-
-Create the directory first:
-
-```bash
-mkdir -p ~/.recall
 ```
+~/.recall/stores/{store-id}/lore.db
+```
+
+Examples:
+- `~/.recall/stores/default/lore.db` — Default store
+- `~/.recall/stores/my-project/lore.db` — Simple store ID
+- `~/.recall/stores/neuralmux__engram/lore.db` — Path-style ID (`/` encoded as `__`)
+
+The directories are created automatically when you create or use a store.
+
+### Legacy Single-Store Migration
+
+If you have an existing database from before multi-store support, Recall automatically migrates it to `~/.recall/stores/default/lore.db` on first run.

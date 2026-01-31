@@ -2,7 +2,7 @@
 
 **Author:** Clario (Architecture Agent)
 **Date:** 2026-01-31
-**Status:** Ready for Implementation
+**Status:** Fully Implemented (All Stories 7.1-7.6 Complete)
 
 ---
 
@@ -1199,3 +1199,39 @@ Session tracking (L1, L2, etc.) is scoped per store:
 ---
 
 The path is clear. Build well.
+
+---
+
+## Implementation Notes (2026-01-31)
+
+### Completed Stories
+
+| Story | Description | Status |
+|-------|-------------|--------|
+| 7.1 | Store Infrastructure & Resolution | ✅ Complete |
+| 7.2 | CLI Store Lifecycle Commands | ✅ Complete |
+| 7.3 | MCP Multi-Store Support | ✅ Complete |
+| 7.4 | CLI Store Export/Import | ✅ Complete |
+| 7.5 | Engram Multi-Store Sync | ✅ Complete |
+| 7.6 | CLI Output Polish | ✅ Complete |
+
+### Implementation Deviations
+
+1. **BMAD config not implemented:** Store resolution uses explicit param > `ENGRAM_STORE` env > "default". BMAD config file reading was descoped per user request.
+
+2. **Store ID max length:** Updated to 128 characters per OpenAPI spec (Story 7.5).
+
+### Key Files
+
+- `internal/store/storeid.go` — Store ID validation (128 char max)
+- `internal/store/resolve.go` — Store resolution logic
+- `internal/store/path.go` — Store path encoding
+- `internal/store/migrate.go` — Legacy database migration
+- `internal/sync/client.go` — Engram HTTP client with store-prefixed APIs
+- `internal/sync/types.go` — Store management types (ListStoresResponse, StoreInfoResponse, etc.)
+- `cmd/recall/store.go` — CLI store commands (including `--remote` flag)
+- `cmd/recall/store_export.go` — Export command
+- `cmd/recall/store_import.go` — Import command
+- `cmd/recall/styles.go` — CLI styling (lipgloss)
+- `mcp/server.go` — MCP tools with store parameter
+- `sync.go` — Syncer with store context (SetStoreID)
