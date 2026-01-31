@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hyperengineering/recall"
@@ -88,44 +89,45 @@ func runStats(cmd *cobra.Command, args []string) error {
 	}
 
 	// Human-readable output with styling
-	printInfo(out, "Local Store Statistics")
-	_, _ = fmt.Fprintf(out, "  Lore count:     %d\n", stats.LoreCount)
-	_, _ = fmt.Fprintf(out, "  Pending sync:   %d\n", stats.PendingSync)
-	_, _ = fmt.Fprintf(out, "  Schema version: %s\n", stats.SchemaVersion)
-
+	var statsContent strings.Builder
+	statsContent.WriteString(fmt.Sprintf("Lore count:     %d\n", stats.LoreCount))
+	statsContent.WriteString(fmt.Sprintf("Pending sync:   %d\n", stats.PendingSync))
+	statsContent.WriteString(fmt.Sprintf("Schema version: %s\n", stats.SchemaVersion))
 	if !stats.LastSync.IsZero() {
-		_, _ = fmt.Fprintf(out, "  Last sync:      %s (%s ago)\n",
+		statsContent.WriteString(fmt.Sprintf("Last sync:      %s (%s ago)",
 			stats.LastSync.Format(time.RFC3339),
-			time.Since(stats.LastSync).Round(time.Minute))
+			time.Since(stats.LastSync).Round(time.Minute)))
 	} else {
-		printMuted(out, "  Last sync:      never")
+		statsContent.WriteString("Last sync:      never")
 	}
 
-	if health != nil {
-		_, _ = fmt.Fprintln(out)
-		printInfo(out, "Health Check")
+	_, _ = fmt.Fprintln(out, renderPanel("Local Store Statistics", statsContent.String()))
 
+	if health != nil {
+		var healthContent strings.Builder
 		if health.Healthy {
-			printSuccess(out, "Status: healthy")
+			healthContent.WriteString(fmt.Sprintf("%s Status: healthy\n", iconSuccess))
 		} else {
-			printError(out, "Status: unhealthy")
+			healthContent.WriteString(fmt.Sprintf("%s Status: unhealthy\n", iconError))
 		}
 
 		if health.StoreOK {
-			_, _ = fmt.Fprintf(out, "  Store:  %s\n", successStyle.Render("OK"))
+			healthContent.WriteString(fmt.Sprintf("Store:  %s\n", successStyle.Render("OK")))
 		} else {
-			_, _ = fmt.Fprintf(out, "  Store:  %s\n", errorStyle.Render("FAILED"))
+			healthContent.WriteString(fmt.Sprintf("Store:  %s\n", errorStyle.Render("FAILED")))
 		}
 
 		if health.EngramReachable {
-			_, _ = fmt.Fprintf(out, "  Engram: %s\n", successStyle.Render("reachable"))
+			healthContent.WriteString(fmt.Sprintf("Engram: %s", successStyle.Render("reachable")))
 		} else {
-			_, _ = fmt.Fprintf(out, "  Engram: %s\n", warningStyle.Render("unreachable"))
+			healthContent.WriteString(fmt.Sprintf("Engram: %s", warningStyle.Render("unreachable")))
 		}
 
 		if health.Error != "" {
-			printError(out, "Error: %s", health.Error)
+			healthContent.WriteString(fmt.Sprintf("\n%s Error: %s", iconError, health.Error))
 		}
+
+		_, _ = fmt.Fprintln(out, renderPanel("Health Check", healthContent.String()))
 	}
 
 	return nil

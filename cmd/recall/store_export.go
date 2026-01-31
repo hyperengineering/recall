@@ -125,22 +125,35 @@ func runStoreExport(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	fmt.Fprintf(out, "  Lore entries: %d\n", loreCount)
-	fmt.Fprintf(out, "  File size: %s\n", formatBytes(fileSize))
-	fmt.Fprintf(out, "  Duration: %s\n", duration.Round(time.Millisecond))
-	printSuccess(out, "Export complete: %s", exportOutputPath)
+	// Build summary panel
+	var summary strings.Builder
+	summary.WriteString(fmt.Sprintf("Lore entries: %d\n", loreCount))
+	summary.WriteString(fmt.Sprintf("File size:    %s\n", formatBytes(fileSize)))
+	summary.WriteString(fmt.Sprintf("Duration:     %s\n", duration.Round(time.Millisecond)))
+	summary.WriteString(fmt.Sprintf("Output:       %s", exportOutputPath))
 
+	fmt.Fprintln(out, renderPanel("Export Summary", summary.String()))
+	printSuccess(out, "Export complete")
+
+	return nil
+}
+
+// ensureParentDir creates the parent directory of path if it doesn't exist.
+func ensureParentDir(path string) error {
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create output directory: %w", err)
+		}
+	}
 	return nil
 }
 
 // exportJSON exports the store to a JSON file.
 func exportJSON(ctx context.Context, s *recall.Store, storeID, destPath string) (int64, error) {
 	// Ensure output directory exists
-	dir := filepath.Dir(destPath)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return 0, fmt.Errorf("create output directory: %w", err)
-		}
+	if err := ensureParentDir(destPath); err != nil {
+		return 0, err
 	}
 
 	// Create output file
@@ -170,11 +183,8 @@ func exportJSON(ctx context.Context, s *recall.Store, storeID, destPath string) 
 // exportSQLite exports the store to a SQLite file.
 func exportSQLite(ctx context.Context, s *recall.Store, destPath string) (int64, error) {
 	// Ensure output directory exists
-	dir := filepath.Dir(destPath)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return 0, fmt.Errorf("create output directory: %w", err)
-		}
+	if err := ensureParentDir(destPath); err != nil {
+		return 0, err
 	}
 
 	if err := s.ExportSQLite(ctx, destPath); err != nil {

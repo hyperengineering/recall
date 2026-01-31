@@ -161,39 +161,45 @@ func runStoreImport(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  Total entries: %d\n", result.Total)
+	// Build summary panel
+	var summary strings.Builder
+	summary.WriteString(fmt.Sprintf("Total entries: %d\n", result.Total))
 	if importDryRun {
-		fmt.Fprintf(out, "  Would create: %d\n", result.Created)
+		summary.WriteString(fmt.Sprintf("Would create:  %d\n", result.Created))
 		if strategy == recall.MergeStrategySkip {
-			fmt.Fprintf(out, "  Would skip: %d\n", result.Skipped)
+			summary.WriteString(fmt.Sprintf("Would skip:    %d\n", result.Skipped))
 		} else {
-			fmt.Fprintf(out, "  Would merge: %d\n", result.Merged)
+			summary.WriteString(fmt.Sprintf("Would merge:   %d\n", result.Merged))
 		}
 	} else {
-		fmt.Fprintf(out, "  Created: %d\n", result.Created)
+		summary.WriteString(fmt.Sprintf("Created:       %d\n", result.Created))
 		if strategy == recall.MergeStrategySkip {
-			fmt.Fprintf(out, "  Skipped: %d\n", result.Skipped)
+			summary.WriteString(fmt.Sprintf("Skipped:       %d\n", result.Skipped))
 		} else {
-			fmt.Fprintf(out, "  Merged: %d\n", result.Merged)
+			summary.WriteString(fmt.Sprintf("Merged:        %d\n", result.Merged))
 		}
 	}
-	fmt.Fprintf(out, "  Errors: %d\n", len(result.Errors))
+	summary.WriteString(fmt.Sprintf("Errors:        %d", len(result.Errors)))
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, renderPanel("Import Summary", summary.String()))
 
 	if len(result.Errors) > 0 {
-		fmt.Fprintln(out)
-		printWarning(out, "Errors encountered:")
+		var errContent strings.Builder
 		maxErrors := 10
 		for i, err := range result.Errors {
 			if i >= maxErrors {
-				fmt.Fprintf(out, "  ... and %d more errors\n", len(result.Errors)-maxErrors)
+				errContent.WriteString(fmt.Sprintf("\n... and %d more errors", len(result.Errors)-maxErrors))
 				break
 			}
-			fmt.Fprintf(out, "  - %s\n", err)
+			if i > 0 {
+				errContent.WriteString("\n")
+			}
+			errContent.WriteString(fmt.Sprintf("- %s", err))
 		}
+		fmt.Fprintln(out, renderErrorPanel("Errors encountered", errContent.String(), ""))
 	}
 
-	fmt.Fprintln(out)
 	if importDryRun {
 		printMuted(out, "Dry-run complete. No changes made.")
 	} else {

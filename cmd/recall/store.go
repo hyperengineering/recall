@@ -225,7 +225,6 @@ func runStoreList(cmd *cobra.Command, args []string) error {
 	printInfo(out, "Local Stores (%d):", len(stores))
 	fmt.Fprintln(out)
 	fmt.Fprint(out, renderTable(headers, rows))
-	fmt.Fprintln(out)
 
 	return nil
 }
@@ -315,7 +314,6 @@ func runStoreListRemote(cmd *cobra.Command) error {
 	printInfo(out, "Remote Stores on Engram (%d):", result.Total)
 	fmt.Fprintln(out)
 	fmt.Fprint(out, renderTable(headers, rows))
-	fmt.Fprintln(out)
 
 	return nil
 }
@@ -682,13 +680,22 @@ func runStoreInfo(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// formatRelativeTime formats a time as a relative string (e.g., "2h ago")
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+// formatRelativeTime formats a time as a relative string (e.g., "2h ago").
 func formatRelativeTime(t time.Time) string {
 	if t.IsZero() {
 		return "-"
 	}
 
 	d := time.Since(t)
+
+	// Handle future times (clock skew)
+	if d < 0 {
+		return "just now"
+	}
 
 	switch {
 	case d < time.Minute:

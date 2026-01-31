@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hyperengineering/recall"
 	"github.com/hyperengineering/recall/internal/store"
@@ -948,5 +949,33 @@ func TestCLI_StoreDelete_JSON_WithRemote(t *testing.T) {
 	}
 	if !result.RemoteDeleted {
 		t.Errorf("RemoteDeleted = false, want true")
+	}
+}
+
+// ============================================================================
+// formatRelativeTime Tests
+// ============================================================================
+
+func TestFormatRelativeTime_Future(t *testing.T) {
+	// Future time (simulates clock skew)
+	future := time.Now().Add(1 * time.Hour)
+	result := formatRelativeTime(future)
+	if result != "just now" {
+		t.Errorf("future time should return 'just now', got: %s", result)
+	}
+}
+
+func TestFormatRelativeTime_Zero(t *testing.T) {
+	result := formatRelativeTime(time.Time{})
+	if result != "-" {
+		t.Errorf("zero time should return '-', got: %s", result)
+	}
+}
+
+func TestFormatRelativeTime_JustNow(t *testing.T) {
+	recent := time.Now().Add(-30 * time.Second)
+	result := formatRelativeTime(recent)
+	if result != "just now" {
+		t.Errorf("30 seconds ago should return 'just now', got: %s", result)
 	}
 }
