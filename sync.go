@@ -33,6 +33,7 @@ type Syncer struct {
 	apiKey    string
 	sourceID  string
 	client    *http.Client
+	debug     *DebugLogger
 }
 
 // NewSyncer creates a new syncer.
@@ -46,6 +47,11 @@ func NewSyncer(store *Store, engramURL, apiKey, sourceID string) *Syncer {
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// SetDebugLogger sets the debug logger for the syncer.
+func (s *Syncer) SetDebugLogger(logger *DebugLogger) {
+	s.debug = logger
 }
 
 // engramHealthResponse represents the Engram health check response.
@@ -246,8 +252,12 @@ func (s *Syncer) pushLoreEntries(ctx context.Context, entries []SyncQueueEntry) 
 	}
 
 	// Send to Engram
-	req, err := http.NewRequestWithContext(ctx, "POST", s.engramURL+"/api/v1/lore", bytes.NewReader(body))
+	url := s.engramURL + "/api/v1/lore"
+	s.debug.LogRequest("POST", url, body)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
+		s.debug.LogError("push_lore", err)
 		return s.failEntries(entries, err.Error())
 	}
 	s.setHeaders(req)
@@ -255,13 +265,17 @@ func (s *Syncer) pushLoreEntries(ctx context.Context, entries []SyncQueueEntry) 
 
 	resp, err := s.client.Do(req)
 	if err != nil {
+		s.debug.LogError("push_lore", err)
 		return s.failEntries(entries, err.Error())
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	respBody, _ := io.ReadAll(resp.Body)
+	s.debug.LogResponse(resp.StatusCode, resp.Status, respBody)
+
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
 		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		s.debug.LogError("push_lore", fmt.Errorf("%s", errMsg))
 		return s.failEntries(entries, errMsg)
 	}
 
@@ -322,8 +336,13 @@ func (s *Syncer) pushFeedbackEntries(ctx context.Context, entries []SyncQueueEnt
 	}
 
 	// Send to Engram
-	req, err := http.NewRequestWithContext(ctx, "POST", s.engramURL+"/api/v1/lore/feedback", bytes.NewReader(body))
+	url := s.engramURL + "/api/v1/lore/feedback"
+	s.debug.LogRequest("POST", url, body)
+	s.debug.LogSync("push_feedback", fmt.Sprintf("sending %d feedback entries", len(feedbackDTOs)))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
+		s.debug.LogError("push_feedback", err)
 		return s.failEntries(entries, err.Error())
 	}
 	s.setHeaders(req)
@@ -331,14 +350,18 @@ func (s *Syncer) pushFeedbackEntries(ctx context.Context, entries []SyncQueueEnt
 
 	resp, err := s.client.Do(req)
 	if err != nil {
+		s.debug.LogError("push_feedback", err)
 		return s.failEntries(entries, err.Error())
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	respBody, _ := io.ReadAll(resp.Body)
+	s.debug.LogResponse(resp.StatusCode, resp.Status, respBody)
+
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
-		return s.failEntries(entries, errMsg)
+		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		s.debug.LogError("push_feedback", fmt.Errorf("%s", errMsg))
+		return s.failEntries(entries, truncate(errMsg, 200))
 	}
 
 	// Success: clear queue entries (no synced_at update for feedback)

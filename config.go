@@ -28,6 +28,14 @@ type Config struct {
 	// AutoSync enables automatic background syncing.
 	// Defaults to true.
 	AutoSync bool
+
+	// Debug enables verbose logging of all Engram API communications.
+	// When enabled, requests, responses, and full error details are logged.
+	Debug bool
+
+	// DebugLogPath is the path to write debug logs.
+	// Defaults to stderr if empty.
+	DebugLogPath string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -44,16 +52,20 @@ func DefaultConfig() Config {
 
 // ConfigFromEnv reads configuration from environment variables.
 //
-//	RECALL_DB_PATH   → LocalPath
-//	ENGRAM_URL       → EngramURL
-//	ENGRAM_API_KEY   → APIKey
-//	RECALL_SOURCE_ID → SourceID
+//	RECALL_DB_PATH     → LocalPath
+//	ENGRAM_URL         → EngramURL
+//	ENGRAM_API_KEY     → APIKey
+//	RECALL_SOURCE_ID   → SourceID
+//	RECALL_DEBUG       → Debug (any non-empty value enables)
+//	RECALL_DEBUG_LOG   → DebugLogPath
 func ConfigFromEnv() Config {
 	return Config{
-		LocalPath: os.Getenv("RECALL_DB_PATH"),
-		EngramURL: os.Getenv("ENGRAM_URL"),
-		APIKey:    os.Getenv("ENGRAM_API_KEY"),
-		SourceID:  os.Getenv("RECALL_SOURCE_ID"),
+		LocalPath:    os.Getenv("RECALL_DB_PATH"),
+		EngramURL:    os.Getenv("ENGRAM_URL"),
+		APIKey:       os.Getenv("ENGRAM_API_KEY"),
+		SourceID:     os.Getenv("RECALL_SOURCE_ID"),
+		Debug:        os.Getenv("RECALL_DEBUG") != "",
+		DebugLogPath: os.Getenv("RECALL_DEBUG_LOG"),
 	}
 }
 

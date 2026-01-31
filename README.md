@@ -339,6 +339,8 @@ func main() {
 | `ENGRAM_URL` | — | Engram service URL (empty = offline mode) |
 | `ENGRAM_API_KEY` | — | API key (required if ENGRAM_URL set) |
 | `RECALL_SOURCE_ID` | hostname | Client identifier |
+| `RECALL_DEBUG` | — | Enable debug logging (any non-empty value) |
+| `RECALL_DEBUG_LOG` | stderr | Path to debug log file |
 
 ### Config Struct
 
@@ -350,8 +352,24 @@ type Config struct {
     SourceID     string        // Client ID (default: hostname)
     SyncInterval time.Duration // Auto-sync interval (default: 5m)
     AutoSync     bool          // Background sync (default: true)
+    Debug        bool          // Enable verbose API logging
+    DebugLogPath string        // Debug log path (default: stderr)
 }
 ```
+
+### Debug Logging
+
+Enable debug logging to see full Engram API communications:
+
+```bash
+export RECALL_DEBUG=1
+export RECALL_DEBUG_LOG=/tmp/recall-debug.log
+```
+
+Debug logs include:
+- Full HTTP request/response bodies
+- Sync operation details
+- Complete error messages from Engram API
 
 ## Confidence Model
 

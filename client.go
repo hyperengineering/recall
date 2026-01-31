@@ -16,6 +16,7 @@ type Client struct {
 	session  *Session
 	searcher Searcher
 	config   Config
+	debug    *DebugLogger
 
 	mu       sync.Mutex
 	stopSync chan struct{}
@@ -35,17 +36,25 @@ func New(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("client: %w", err)
 	}
 
+	// Create debug logger if enabled
+	debug, err := NewDebugLogger(cfg.Debug, cfg.DebugLogPath)
+	if err != nil {
+		return nil, fmt.Errorf("client: %w", err)
+	}
+
 	c := &Client{
 		store:    store,
 		session:  NewSession(),
 		searcher: &BruteForceSearcher{},
 		config:   cfg,
+		debug:    debug,
 		stopSync: make(chan struct{}),
 		syncDone: make(chan struct{}),
 	}
 
 	if !cfg.IsOffline() {
 		c.syncer = NewSyncer(store, cfg.EngramURL, cfg.APIKey, cfg.SourceID)
+		c.syncer.SetDebugLogger(debug)
 	}
 
 	// Start background sync if enabled
@@ -454,6 +463,11 @@ func (c *Client) Close() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = c.syncer.Flush(ctx)
+	}
+
+	// Close debug logger
+	if c.debug != nil {
+		_ = c.debug.Close()
 	}
 
 	return c.store.Close()
