@@ -1,15 +1,23 @@
 # Recall
 
-Recall is a Go library and CLI for managing experiential lore — discrete units of knowledge captured from AI agent workflows.
+**Persistent memory for AI agents.** Recall captures, stores, and retrieves experiential knowledge (lore) across sessions—so your AI agents learn from the past instead of starting fresh every time.
 
-## Overview
+## What It Does
+
+```
+Session 1: Agent discovers "ORM generates N+1 queries without eager loading"
+           → Recall stores this insight
+
+Session 2: Agent starts similar database work
+           → Recall surfaces: "Watch out for N+1 queries..."
+           → Agent avoids the same mistake
+```
 
 Recall enables AI agents to:
-- **Capture** structured insights during workflows
-- **Store** lore locally for low-latency recall
-- **Query** semantically similar lore based on current context
-- **Synchronize** lore with Engram (central service) for cross-environment persistence
-- **Reinforce** lore quality through feedback loops
+- **Remember** insights across sessions (architectural decisions, gotchas, patterns)
+- **Recall** relevant knowledge when starting new work
+- **Reinforce** what works through feedback loops
+- **Sync** knowledge across environments via Engram (optional)
 
 ## Installation
 
@@ -29,16 +37,13 @@ go install github.com/hyperengineering/recall/cmd/recall@latest
 
 ```bash
 docker pull ghcr.io/hyperengineering/recall:latest
-
-# Run with local database mounted
-docker run -v ./data:/data -e RECALL_DB_PATH=/data/lore.db ghcr.io/hyperengineering/recall:latest query "your search"
 ```
 
-### Download Binary
+### Binary Download
 
-Pre-built binaries for Linux, macOS, and Windows are available on the [Releases](https://github.com/hyperengineering/recall/releases) page.
+Pre-built binaries available on the [Releases](https://github.com/hyperengineering/recall/releases) page.
 
-### Library
+### Go Library
 
 ```bash
 go get github.com/hyperengineering/recall
@@ -46,523 +51,33 @@ go get github.com/hyperengineering/recall
 
 ## Quick Start
 
-Recall works out of the box with zero configuration. By default, it stores lore in `./data/lore.db`.
+Recall works immediately with zero configuration—data stores in `./data/lore.db` by default.
 
-### 1. Record Lore
+### Record an insight
 
 ```bash
-# Record a new insight
-recall record --content "Queue consumers benefit from idempotency checks" --category PATTERN_OUTCOME
-
-# With optional context and confidence
-recall record --content "ORM generates N+1 queries without eager loading" \
-  --category DEPENDENCY_BEHAVIOR \
-  --context "story-2.1-performance" \
-  --confidence 0.7
-
-# Output as JSON
-recall record --content "Always validate input at API boundaries" \
-  --category INTERFACE_LESSON --json
+recall record --content "Queue consumers need idempotency checks" --category PATTERN_OUTCOME
 ```
 
-### 3. Query Lore
+### Search for relevant knowledge
 
 ```bash
-# Search for relevant lore
 recall query "implementing message consumers"
-
-# With filters
-recall query "database performance" --top 10 --min-confidence 0.6
-
-# Filter by category
-recall query "testing" --category TESTING_STRATEGY,PATTERN_OUTCOME
-
-# Output as JSON
-recall query "error handling" --json
 ```
 
-### 4. Provide Feedback
-
-After querying, lore entries are assigned session references (L1, L2, ...).
+### Provide feedback on what helped
 
 ```bash
-# Single-item feedback
-recall feedback --id L1 --type helpful
-recall feedback --id L2 --type incorrect
-recall feedback --id L3 --type not_relevant
-
-# Batch feedback
-recall feedback --helpful L1,L2 --incorrect L3
-
-# By lore ID directly
-recall feedback --id 01HXYZ123ABC --type helpful
+recall feedback --helpful L1 --not-relevant L2
 ```
 
-### 5. Sync with Engram
+That's it. Recall now remembers that insight for future sessions.
 
-```bash
-# Push local changes to Engram
-recall sync push
+## Using with Claude Code (MCP)
 
-# Download full snapshot from Engram (replaces local data)
-recall sync bootstrap
-```
+The most common use case is integrating Recall with AI coding assistants via MCP (Model Context Protocol).
 
-## Configuration
-
-### Database Path (Optional)
-
-By default, Recall stores data in `./data/lore.db`. To customize:
-
-```bash
-# Via environment variable
-export RECALL_DB_PATH="/path/to/your/lore.db"
-
-# Via flag
-recall record --lore-path /path/to/your/lore.db --content "..." -c PATTERN_OUTCOME
-```
-
-### Engram Sync (Optional)
-
-For cross-environment synchronization with Engram:
-
-```bash
-export ENGRAM_URL="https://engram.example.com"
-export ENGRAM_API_KEY="your-api-key"
-export RECALL_SOURCE_ID="my-workstation"  # defaults to hostname
-```
-
-## CLI Reference
-
-### Global Flags
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--lore-path` | `RECALL_DB_PATH` | `./data/lore.db` | Path to local SQLite database |
-| `--engram-url` | `ENGRAM_URL` | - | URL of Engram central service |
-| `--api-key` | `ENGRAM_API_KEY` | - | API key for Engram authentication |
-| `--source-id` | `RECALL_SOURCE_ID` | hostname | Client source identifier |
-| `--json` | - | - | Output as JSON instead of human-readable |
-
-Configuration priority: flag > environment variable > default.
-
-### recall record
-
-Record a new lore entry.
-
-```
-recall record --content <text> --category <category> [flags]
-```
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--content` | - | (required) | Lore content (max 4000 chars) |
-| `--category` | `-c` | (required) | Lore category |
-| `--context` | - | - | Additional context (max 1000 chars) |
-| `--confidence` | - | 0.5 | Initial confidence (0.0-1.0) |
-
-**Examples:**
-
-```bash
-recall record --content "Pattern X works well for Y" -c PATTERN_OUTCOME
-recall record --content "Edge case Z" -c EDGE_CASE_DISCOVERY --context "story-1.2" --confidence 0.8
-```
-
-### recall query
-
-Search for relevant lore.
-
-```
-recall query <search terms> [flags]
-```
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--top` | `-k` | 5 | Maximum number of results |
-| `--min-confidence` | - | 0.0 | Minimum confidence threshold |
-| `--category` | - | - | Comma-separated categories to filter |
-
-**Examples:**
-
-```bash
-recall query "error handling patterns"
-recall query "performance" --top 10 --min-confidence 0.7
-recall query "testing" --category TESTING_STRATEGY,PATTERN_OUTCOME --json
-```
-
-### recall feedback
-
-Provide feedback on recalled lore.
-
-**Single-item mode:**
-
-```
-recall feedback --id <ref> --type <type>
-```
-
-| Flag | Description |
-|------|-------------|
-| `--id` | Lore ID or session reference (L1, L2, ...) |
-| `--type` | Feedback type: `helpful`, `incorrect`, `not_relevant` |
-
-**Batch mode:**
-
-```
-recall feedback [--helpful <refs>] [--incorrect <refs>] [--not-relevant <refs>]
-```
-
-| Flag | Description |
-|------|-------------|
-| `--helpful` | Comma-separated helpful refs (+0.08 confidence) |
-| `--incorrect` | Comma-separated incorrect refs (-0.15 confidence) |
-| `--not-relevant` | Comma-separated not-relevant refs (no change) |
-
-**Examples:**
-
-```bash
-recall feedback --id L1 --type helpful
-recall feedback --helpful L1,L2 --incorrect L3
-recall feedback --id 01HXYZ123ABC --type incorrect --json
-```
-
-### recall sync push
-
-Push pending local changes to Engram.
-
-```
-recall sync push [flags]
-```
-
-Requires `ENGRAM_URL` and `ENGRAM_API_KEY` to be configured.
-
-**Example:**
-
-```bash
-recall sync push
-recall sync push --json
-```
-
-### recall sync bootstrap
-
-Download a full snapshot from Engram, replacing local data.
-
-```
-recall sync bootstrap [flags]
-```
-
-**Warning:** This replaces ALL local lore with the server snapshot.
-
-**Example:**
-
-```bash
-recall sync bootstrap
-recall sync bootstrap --json
-```
-
-### recall session
-
-List lore surfaced during the current session.
-
-```
-recall session [flags]
-```
-
-**Note:** In CLI mode, each command invocation is a separate session. This command is more useful in scripted or interactive scenarios.
-
-**Example:**
-
-```bash
-recall session
-recall session --json
-```
-
-### recall version
-
-Print version information.
-
-```
-recall version [flags]
-```
-
-**Example:**
-
-```bash
-recall version
-recall version --json
-```
-
-```json
-{
-  "version": "1.0.0",
-  "commit": "abc1234",
-  "date": "2026-01-30T12:00:00Z",
-  "go": "go1.23.12",
-  "os": "darwin",
-  "arch": "arm64"
-}
-```
-
-### recall stats
-
-Display store statistics.
-
-```
-recall stats [flags]
-```
-
-**Example:**
-
-```bash
-recall stats
-recall stats --json
-```
-
-## Configuration Reference
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RECALL_DB_PATH` | `./data/lore.db` | Path to local SQLite database |
-| `ENGRAM_URL` | - | URL of Engram central service |
-| `ENGRAM_API_KEY` | - | API key for Engram (required if ENGRAM_URL is set) |
-| `RECALL_SOURCE_ID` | hostname | Client identifier for observability |
-
-### Config Struct (Library)
-
-```go
-type Config struct {
-    LocalPath    string        // Path to local SQLite database (default: ./data/lore.db)
-    EngramURL    string        // Central service URL (optional, empty = offline mode)
-    APIKey       string        // Engram API key (required if EngramURL is set)
-    SourceID     string        // Client identifier (defaults to hostname)
-    SyncInterval time.Duration // Auto-sync interval (default: 5m)
-    AutoSync     bool          // Enable background sync (default: true)
-}
-```
-
-Load configuration with defaults:
-
-```go
-cfg := recall.DefaultConfig()                    // All defaults including ./data/lore.db
-cfg := recall.ConfigFromEnv().WithDefaults()     // Env vars with defaults fallback
-```
-
-### Offline Mode
-
-When `ENGRAM_URL` is not set, Recall operates in offline-only mode:
-- All local operations work normally (record, query, feedback)
-- Sync commands return an error
-- No network calls are made
-
-## Lore Categories
-
-| Category | Description |
-|----------|-------------|
-| `ARCHITECTURAL_DECISION` | System-level choices and rationale |
-| `PATTERN_OUTCOME` | Results of applying a design pattern |
-| `INTERFACE_LESSON` | Contract/API design insights |
-| `EDGE_CASE_DISCOVERY` | Scenarios found during implementation |
-| `IMPLEMENTATION_FRICTION` | Design-to-code translation difficulties |
-| `TESTING_STRATEGY` | Testing approach insights |
-| `DEPENDENCY_BEHAVIOR` | Library/framework gotchas |
-| `PERFORMANCE_INSIGHT` | Performance characteristics |
-
-## Confidence Model
-
-Confidence represents how validated a lore entry is (0.0 - 1.0):
-
-| Score | Meaning |
-|-------|---------|
-| 0.0 - 0.3 | Hypothesis, unvalidated |
-| 0.3 - 0.6 | Some evidence, limited validation |
-| 0.6 - 0.8 | Validated in multiple contexts |
-| 0.8 - 1.0 | Repeatedly confirmed, high reliability |
-
-Feedback adjustments:
-- `helpful`: +0.08 (capped at 1.0)
-- `incorrect`: -0.15 (floored at 0.0)
-- `not_relevant`: no change
-
-## Library Usage
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-
-    "github.com/hyperengineering/recall"
-)
-
-func main() {
-    // Create client - offline mode when EngramURL is not set
-    client, err := recall.New(recall.Config{
-        LocalPath: "./data/lore.db",
-        // Optional: EngramURL and APIKey for sync with Engram
-        // EngramURL: "https://engram.example.com",
-        // APIKey:    "your-api-key",
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer client.Close()
-
-    // Record lore using functional options
-    lore, err := client.Record(
-        "ORM generates N+1 queries without eager loading",
-        recall.CategoryDependencyBehavior,
-        recall.WithContext("performance-investigation"),
-        recall.WithConfidence(0.7),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Printf("Recorded: %s\n", lore.ID)
-
-    // Query for relevant lore
-    ctx := context.Background()
-    minConf := 0.5
-    result, err := client.Query(ctx, recall.QueryParams{
-        Query:         "database performance",
-        K:             5,
-        MinConfidence: &minConf,
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    for _, l := range result.Lore {
-        fmt.Printf("[%s] %s (confidence: %.2f)\n", l.Category, l.Content, l.Confidence)
-    }
-
-    // Provide feedback using session reference (L1, L2, etc.)
-    if len(result.Lore) > 0 {
-        updated, err := client.Feedback("L1", recall.Helpful)
-        if err != nil {
-            log.Fatal(err)
-        }
-        fmt.Printf("Updated confidence: %.2f\n", updated.Confidence)
-    }
-
-    // Sync with Engram (only if configured)
-    if err := client.Sync(ctx); err != nil {
-        // Returns ErrOffline if EngramURL not configured
-        fmt.Printf("Sync: %v\n", err)
-    }
-}
-```
-
-## JSON Output Mode
-
-All CLI commands support `--json` for structured output:
-
-```bash
-# Record with JSON output
-recall record --content "Test" -c PATTERN_OUTCOME --json
-```
-
-```json
-{
-  "id": "01HXYZ123ABC456DEF789GHI",
-  "content": "Test",
-  "category": "PATTERN_OUTCOME",
-  "confidence": 0.5,
-  "validation_count": 0,
-  "source_id": "my-workstation",
-  "created_at": "2026-01-29T10:30:00Z",
-  "updated_at": "2026-01-29T10:30:00Z"
-}
-```
-
-All JSON output uses `snake_case` field names.
-
-## Security
-
-### API Key Protection
-
-Recall follows security best practices for API key handling:
-
-- **Never logged**: API keys are never written to logs or debug output
-- **Never in errors**: Error messages never include API key values
-- **Never in CLI output**: The `--json` flag and human-readable output never expose keys
-- **Environment variables**: Configure keys via `ENGRAM_API_KEY` to avoid hardcoding
-
-**Recommended practices:**
-
-```bash
-# Good: Use environment variables
-export ENGRAM_API_KEY="sk-..."
-recall sync push
-
-# Avoid: Passing keys as flags (visible in shell history)
-recall --api-key "sk-..." sync push  # Not recommended
-```
-
-## Troubleshooting
-
-### Database Directory Permission Error
-
-**Error:** `mkdir ./data: permission denied` or `open ./data/lore.db: permission denied`
-
-**Solution:** Recall defaults to `./data/lore.db` in the current directory. If you don't have write permissions, specify a different path:
-
-```bash
-export RECALL_DB_PATH="/path/with/write/access/lore.db"
-```
-
-### Offline Mode Errors
-
-**Error:** `sync unavailable: ENGRAM_URL not configured (offline-only mode)`
-
-**Solution:** Configure Engram URL and API key for sync operations:
-
-```bash
-export ENGRAM_URL="https://engram.example.com"
-export ENGRAM_API_KEY="your-api-key"
-```
-
-Or accept offline-only mode — local operations (record, query, feedback) work without Engram.
-
-### Invalid Input Errors
-
-**Error:** `record lore: validation: Category: invalid: must be one of ARCHITECTURAL_DECISION, PATTERN_OUTCOME, ...`
-
-**Solution:** Use a valid category from the list above.
-
-**Error:** `record lore: validation: Content: exceeds 4000 character limit`
-
-**Solution:** Shorten the content to 4000 characters or less.
-
-**Error:** `invalid feedback type "wrong": valid types are helpful, incorrect, not_relevant`
-
-**Solution:** Use one of the valid feedback types.
-
-### Sync Failures
-
-**Error:** `push: sync: push_lore failed (status 401): Unauthorized`
-
-**Solution:** Check that `ENGRAM_API_KEY` is set correctly.
-
-**Error:** `bootstrap: sync: download_snapshot failed (status 503): Service Unavailable`
-
-**Solution:** The Engram service may be temporarily unavailable. Retry later.
-
-## MCP Integration
-
-Recall provides an MCP (Model Context Protocol) server for integration with AI coding agents like Claude Code.
-
-**Available tools:**
-- `recall_query` - Retrieve relevant lore with session references (L1, L2, ...)
-- `recall_record` - Capture new lore with content, category, and optional context
-- `recall_feedback` - Provide feedback using session references
-- `recall_sync` - Push pending changes to Engram
-
-### MCP Server Quick Start
-
-Add Recall to your Claude Code configuration (`~/.claude/claude_desktop_config.json`):
+Add to `~/.claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -579,80 +94,316 @@ Add Recall to your Claude Code configuration (`~/.claude/claude_desktop_config.j
 }
 ```
 
-The MCP server maintains session state, so L1, L2, etc. references persist throughout your coding session.
+This gives Claude Code four tools:
+- `recall_query` — Search for relevant lore before starting work
+- `recall_record` — Capture insights during implementation
+- `recall_feedback` — Mark what helped (or didn't)
+- `recall_sync` — Push to Engram for team sharing
 
-### CLI-based Workflow (Alternative)
+See [MCP Integration Guide](docs/mcp-integration.md) for detailed configuration and usage patterns.
 
-```bash
-# Set environment variables
-export RECALL_DB_PATH="$HOME/.recall/lore.db"
-export RECALL_SOURCE_ID="claude-code"
+## How It Works
 
-# Query for relevant context before starting work
-recall query "implementing message queue consumer" --json
-
-# Record insights during implementation
-recall record --content "Queue consumers benefit from idempotency checks" \
-  --category PATTERN_OUTCOME --context "story-3.1" --json
-
-# Provide feedback on recalled lore
-recall feedback --helpful L1,L3 --not-relevant L2
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Your Workflows                              │
+│  ┌───────────┐    ┌───────────┐    ┌───────────┐    ┌───────────┐  │
+│  │  Claude   │    │  Custom   │    │   CLI     │    │    Go     │  │
+│  │   Code    │    │   Agent   │    │  Scripts  │    │  Library  │  │
+│  └─────┬─────┘    └─────┬─────┘    └─────┬─────┘    └─────┬─────┘  │
+│        │                │                │                │         │
+│        └────────────────┴────────────────┴────────────────┘         │
+│                                  │                                   │
+│                           ┌──────▼──────┐                           │
+│                           │   Recall    │  ← Local client           │
+│                           │   Client    │    (this library)         │
+│                           └──────┬──────┘                           │
+│                                  │                                   │
+│                           ┌──────▼──────┐                           │
+│                           │   SQLite    │  ← Fast local storage     │
+│                           │   (local)   │    (<20ms queries)        │
+│                           └──────┬──────┘                           │
+└──────────────────────────────────┼──────────────────────────────────┘
+                                   │
+                            (optional sync)
+                                   │
+                           ┌───────▼───────┐
+                           │    Engram     │  ← Central service
+                           │   (remote)    │    (team sharing)
+                           └───────────────┘
 ```
 
-See [docs/mcp-integration.md](docs/mcp-integration.md) for comprehensive configuration and usage patterns.
+**Recall** is the local client—it handles storage, search, and the agent-facing API.
+
+**Engram** is the optional central service—it syncs lore across environments so your whole team benefits.
+
+## Engram Sync (Optional)
+
+Without Engram, Recall works entirely offline—perfect for personal use.
+
+With Engram, lore syncs across all your environments:
+
+```bash
+# Configure Engram connection
+export ENGRAM_URL="https://engram.example.com"
+export ENGRAM_API_KEY="your-api-key"
+
+# Push your insights to the team
+recall sync push
+
+# Pull latest from Engram (replaces local data)
+recall sync bootstrap
+```
+
+## CLI Reference
+
+### Global Options
+
+| Option | Environment Variable | Default | Description |
+|--------|---------------------|---------|-------------|
+| `--lore-path` | `RECALL_DB_PATH` | `./data/lore.db` | Local database path |
+| `--engram-url` | `ENGRAM_URL` | — | Engram service URL |
+| `--api-key` | `ENGRAM_API_KEY` | — | Engram API key |
+| `--source-id` | `RECALL_SOURCE_ID` | hostname | Client identifier |
+| `--json` | — | — | Output as JSON |
+
+### Commands
+
+#### `recall record`
+
+Capture new knowledge.
+
+```bash
+recall record --content "Event sourcing overkill for simple CRUD" \
+  --category ARCHITECTURAL_DECISION \
+  --context "story-2.1" \
+  --confidence 0.8
+```
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--content` | Yes | — | The insight (max 4000 chars) |
+| `--category`, `-c` | Yes | — | Category (see below) |
+| `--context` | No | — | Where this was learned (max 1000 chars) |
+| `--confidence` | No | 0.5 | Initial confidence (0.0–1.0) |
+
+#### `recall query`
+
+Search for relevant lore.
+
+```bash
+recall query "database performance patterns" --top 10 --min-confidence 0.6
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--top`, `-k` | 5 | Max results |
+| `--min-confidence` | 0.0 | Minimum confidence threshold |
+| `--category` | — | Filter by categories (comma-separated) |
+
+#### `recall feedback`
+
+Improve lore quality through feedback.
+
+```bash
+# Single item
+recall feedback --id L1 --type helpful
+
+# Batch
+recall feedback --helpful L1,L2 --incorrect L3 --not-relevant L4
+```
+
+Feedback effects:
+- `helpful`: +0.08 confidence (caps at 1.0)
+- `incorrect`: -0.15 confidence (floors at 0.0)
+- `not_relevant`: no change (context mismatch, not quality issue)
+
+#### `recall sync`
+
+Synchronize with Engram.
+
+```bash
+recall sync push       # Send local changes to Engram
+recall sync bootstrap  # Download full snapshot from Engram
+```
+
+#### `recall session`
+
+List lore surfaced in current session.
+
+```bash
+recall session
+```
+
+#### `recall stats`
+
+Show store statistics.
+
+```bash
+recall stats
+```
+
+#### `recall version`
+
+Print version info.
+
+```bash
+recall version
+```
+
+#### `recall mcp`
+
+Run as MCP server (for AI agent integration).
+
+```bash
+recall mcp
+```
+
+## Lore Categories
+
+| Category | Use For | Example |
+|----------|---------|---------|
+| `ARCHITECTURAL_DECISION` | System-level choices | "Chose event sourcing for audit trail" |
+| `PATTERN_OUTCOME` | Pattern results | "Repository pattern unnecessary for simple CRUD" |
+| `INTERFACE_LESSON` | API design insights | "Nullable returns caused null check proliferation" |
+| `EDGE_CASE_DISCOVERY` | Implementation edge cases | "Empty collections need special handling" |
+| `IMPLEMENTATION_FRICTION` | Design-to-code issues | "Interface was right but needed async" |
+| `TESTING_STRATEGY` | Testing insights | "Queue consumers need idempotency tests" |
+| `DEPENDENCY_BEHAVIOR` | Library gotchas | "ORM N+1 without eager loading config" |
+| `PERFORMANCE_INSIGHT` | Performance findings | "In-memory failed at 10k; needed streaming" |
+
+## Library Usage
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/hyperengineering/recall"
+)
+
+func main() {
+    // Create client
+    client, err := recall.New(recall.Config{
+        LocalPath: "./data/lore.db",
+        // Optional: EngramURL and APIKey for sync
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    // Record lore
+    lore, err := client.Record(
+        "Batch inserts with RETURNING avoid N queries for IDs",
+        recall.CategoryPerformanceInsight,
+        recall.WithContext("story-3.2"),
+        recall.WithConfidence(0.7),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Recorded: %s\n", lore.ID)
+
+    // Query for relevant lore
+    ctx := context.Background()
+    result, err := client.Query(ctx, recall.QueryParams{
+        Query: "database insert performance",
+        K:     5,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    for _, l := range result.Lore {
+        fmt.Printf("[%s] %s\n", l.Category, l.Content)
+    }
+
+    // Provide feedback
+    if len(result.Lore) > 0 {
+        client.Feedback("L1", recall.Helpful)
+    }
+}
+```
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RECALL_DB_PATH` | `./data/lore.db` | Local database path |
+| `ENGRAM_URL` | — | Engram service URL (empty = offline mode) |
+| `ENGRAM_API_KEY` | — | API key (required if ENGRAM_URL set) |
+| `RECALL_SOURCE_ID` | hostname | Client identifier |
+
+### Config Struct
+
+```go
+type Config struct {
+    LocalPath    string        // Database path (default: ./data/lore.db)
+    EngramURL    string        // Engram URL (empty = offline)
+    APIKey       string        // Engram API key
+    SourceID     string        // Client ID (default: hostname)
+    SyncInterval time.Duration // Auto-sync interval (default: 5m)
+    AutoSync     bool          // Background sync (default: true)
+}
+```
+
+## Confidence Model
+
+Confidence scores (0.0–1.0) represent how validated lore is:
+
+| Score | Meaning |
+|-------|---------|
+| 0.0–0.3 | Hypothesis, unvalidated |
+| 0.3–0.6 | Some evidence |
+| 0.6–0.8 | Validated in multiple contexts |
+| 0.8–1.0 | Repeatedly confirmed |
+
+Lore starts at 0.5 by default. Feedback from agents adjusts confidence over time.
+
+## Security
+
+- API keys are never logged or exposed in output
+- Use environment variables for keys, not CLI flags
+- Local SQLite database should be protected like any credential store
+
+## Troubleshooting
+
+### "mkdir ./data: permission denied"
+
+Recall defaults to `./data/lore.db`. Set a different path:
+
+```bash
+export RECALL_DB_PATH="$HOME/.recall/lore.db"
+```
+
+### "sync unavailable: ENGRAM_URL not configured"
+
+Sync requires Engram. Either configure it or use offline mode (local operations work fine without it).
+
+### "invalid category"
+
+Use one of the eight categories listed above (case-sensitive).
+
+## Documentation
+
+- [MCP Integration Guide](docs/mcp-integration.md) — Claude Code and AI agent setup
+- [Engram API Specification](docs/engram-api-specification.md) — Central service API reference
+- [Technical Design](docs/engram-recall.md) — Architecture and implementation details
 
 ## Development
 
 ```bash
-# Download dependencies
-make deps
-
-# Run tests
-make test
-
-# Run tests with coverage report
-make test-cover
-
-# Run tests with race detector
-make test-race
-
-# Run linter
-make lint
-
-# Format code
-make fmt
-
-# Run go vet
-make vet
-
-# Build CLI
-make build
-
-# Install to GOPATH
-make install
-
-# Run all CI checks (fmt, vet, lint, test, build)
-make ci
-
-# Cross-compile for all platforms
-make release
-
-# Generate code (mocks, etc.)
-make generate
-
-# Clean build artifacts
-make clean
+make build       # Build CLI
+make test        # Run tests
+make lint        # Run linter
+make ci          # All checks
 ```
-
-## Architecture
-
-Recall is part of the Engram system:
-
-- **Engram** (central service): Where lore is stored and synchronized
-- **Recall** (this library): How agents retrieve and contribute lore
-- **Lore**: Individual learnings — the substance itself
-
-See [docs/engram-recall.md](docs/engram-recall.md) for the full technical design.
 
 ## License
 
