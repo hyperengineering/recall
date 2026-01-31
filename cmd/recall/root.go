@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hyperengineering/recall"
+	"github.com/hyperengineering/recall/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -15,6 +16,7 @@ var (
 	cfgEngramURL string
 	cfgAPIKey    string
 	cfgSourceID  string
+	cfgStore     string
 	outputJSON   bool
 )
 
@@ -41,6 +43,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgEngramURL, "engram-url", "", "URL of Engram central service")
 	rootCmd.PersistentFlags().StringVar(&cfgAPIKey, "api-key", "", "API key for Engram authentication")
 	rootCmd.PersistentFlags().StringVar(&cfgSourceID, "source-id", "", "Client source identifier")
+	rootCmd.PersistentFlags().StringVar(&cfgStore, "store", "", "Store ID to operate against (default: resolved from ENGRAM_STORE or 'default')")
 	rootCmd.PersistentFlags().BoolVar(&outputJSON, "json", false, "Output as JSON")
 
 	rootCmd.AddCommand(recordCmd)
@@ -49,6 +52,7 @@ func init() {
 	rootCmd.AddCommand(feedbackCmd)
 	rootCmd.AddCommand(statsCmd)
 	rootCmd.AddCommand(sessionCmd)
+	rootCmd.AddCommand(storeCmd)
 }
 
 func loadConfig() recall.Config {
@@ -66,6 +70,13 @@ func loadConfig() recall.Config {
 	}
 	if cfgSourceID != "" {
 		cfg.SourceID = cfgSourceID
+	}
+	if cfgStore != "" {
+		cfg.Store = cfgStore
+		// Update LocalPath to match store if not explicitly set
+		if cfgLorePath == "" {
+			cfg.LocalPath = store.StoreDBPath(cfgStore)
+		}
 	}
 
 	// Override with environment variables (only if flags not set)

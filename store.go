@@ -691,6 +691,79 @@ func (s *Store) SetMetadata(key, value string) error {
 	return err
 }
 
+// DetailedStats returns detailed store statistics including category distribution.
+type DetailedStats struct {
+	LoreCount            int                `json:"lore_count"`
+	AverageConfidence    float64            `json:"average_confidence"`
+	CategoryDistribution map[Category]int   `json:"category_distribution"`
+	LastUpdated          time.Time          `json:"last_updated"`
+}
+
+// GetDetailedStats returns detailed statistics for the store.
+func (s *Store) GetDetailedStats() (*DetailedStats, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	stats := &DetailedStats{
+		CategoryDistribution: make(map[Category]int),
+	}
+
+	// Count and average confidence
+	var avgConf sql.NullFloat64
+	err := s.db.QueryRow(`
+		SELECT COUNT(*), AVG(confidence)
+		FROM lore_entries
+		WHERE deleted_at IS NULL
+	`).Scan(&stats.LoreCount, &avgConf)
+	if err != nil {
+		return nil, fmt.Errorf("query lore stats: %w", err)
+	}
+	if avgConf.Valid {
+		stats.AverageConfidence = avgConf.Float64
+	}
+
+	// Category distribution
+	rows, err := s.db.Query(`
+		SELECT category, COUNT(*)
+		FROM lore_entries
+		WHERE deleted_at IS NULL
+		GROUP BY category
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query category distribution: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cat string
+		var count int
+		if err := rows.Scan(&cat, &count); err != nil {
+			return nil, fmt.Errorf("scan category: %w", err)
+		}
+		stats.CategoryDistribution[Category(cat)] = count
+	}
+
+	// Last updated (most recent updated_at)
+	var lastUpdatedStr sql.NullString
+	err = s.db.QueryRow(`
+		SELECT MAX(updated_at)
+		FROM lore_entries
+		WHERE deleted_at IS NULL
+	`).Scan(&lastUpdatedStr)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("query last updated: %w", err)
+	}
+	if lastUpdatedStr.Valid {
+		stats.LastUpdated, _ = time.Parse(time.RFC3339, lastUpdatedStr.String)
+	}
+
+	return stats, nil
+}
+
 // ReplaceFromSnapshot atomically replaces all lore with data from a snapshot.
 //
 // The snapshot is expected to be a SQLite database file streamed as io.Reader.
