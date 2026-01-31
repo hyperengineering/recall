@@ -701,3 +701,134 @@ func (s *Syncer) setHeaders(req *http.Request) {
 		req.Header.Set("X-Recall-Source-ID", s.sourceID)
 	}
 }
+
+// StoreListItem represents summary information for a store.
+type StoreListItem struct {
+	ID           string `json:"id"`
+	RecordCount  int64  `json:"record_count"`
+	LastAccessed string `json:"last_accessed"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Description  string `json:"description,omitempty"`
+}
+
+// StoreListResult contains the list of stores.
+type StoreListResult struct {
+	Stores []StoreListItem `json:"stores"`
+	Total  int             `json:"total"`
+}
+
+// StoreInfo contains detailed information about a store.
+type StoreInfo struct {
+	ID           string          `json:"id"`
+	Created      string          `json:"created"`
+	LastAccessed string          `json:"last_accessed"`
+	Description  string          `json:"description,omitempty"`
+	SizeBytes    int64           `json:"size_bytes"`
+	Stats        StoreDetailStats `json:"stats"`
+}
+
+// StoreDetailStats contains detailed statistics for a store.
+type StoreDetailStats struct {
+	TotalLore         int64            `json:"total_lore"`
+	ActiveLore        int64            `json:"active_lore"`
+	DeletedLore       int64            `json:"deleted_lore"`
+	EmbeddingStats    EmbeddingStats   `json:"embedding_stats"`
+	CategoryStats     map[string]int64 `json:"category_stats"`
+	QualityStats      StoreQualityStats `json:"quality_stats"`
+	UniqueSourceCount int64            `json:"unique_source_count"`
+	StatsAsOf         string           `json:"stats_as_of"`
+}
+
+// EmbeddingStats contains embedding generation statistics.
+type EmbeddingStats struct {
+	Complete int64 `json:"complete"`
+	Pending  int64 `json:"pending"`
+	Failed   int64 `json:"failed"`
+}
+
+// StoreQualityStats contains lore quality metrics.
+type StoreQualityStats struct {
+	AverageConfidence   float64 `json:"average_confidence"`
+	ValidatedCount      int64   `json:"validated_count"`
+	HighConfidenceCount int64   `json:"high_confidence_count"`
+	LowConfidenceCount  int64   `json:"low_confidence_count"`
+}
+
+// ListStores returns all available stores from Engram.
+// If prefix is non-empty, filters stores by ID prefix (client-side filtering).
+func (s *Syncer) ListStores(ctx context.Context, prefix string) (*StoreListResult, error) {
+	url := s.engramURL + "/api/v1/stores"
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list stores: create request: %w", err)
+	}
+	s.setHeaders(req)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list stores: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("list stores: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+	}
+
+	var result StoreListResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("list stores: decode response: %w", err)
+	}
+
+	// Apply prefix filter client-side if specified
+	if prefix != "" {
+		filtered := make([]StoreListItem, 0)
+		for _, store := range result.Stores {
+			if strings.HasPrefix(store.ID, prefix) {
+				filtered = append(filtered, store)
+			}
+		}
+		result.Stores = filtered
+		result.Total = len(filtered)
+	}
+
+	return &result, nil
+}
+
+// GetStoreInfo returns detailed information about a specific store.
+func (s *Syncer) GetStoreInfo(ctx context.Context, storeID string) (*StoreInfo, error) {
+	// URL-encode the store ID (handles "/" in path-style IDs)
+	encodedID := strings.ReplaceAll(storeID, "/", "%2F")
+	url := fmt.Sprintf("%s/api/v1/stores/%s", s.engramURL, encodedID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get store info: create request: %w", err)
+	}
+	s.setHeaders(req)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get store info: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("store not found: %s", storeID)
+	}
+	if resp.StatusCode == http.StatusBadRequest {
+		return nil, fmt.Errorf("invalid store ID: %s", storeID)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get store info: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+	}
+
+	var result StoreInfo
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("get store info: decode response: %w", err)
+	}
+
+	return &result, nil
+}

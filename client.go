@@ -60,6 +60,9 @@ func New(cfg Config) (*Client, error) {
 	// Start background sync if enabled
 	if c.syncer != nil && cfg.AutoSync {
 		go c.backgroundSync()
+	} else {
+		// No background sync - signal done immediately to avoid 5s timeout in Close()
+		close(c.syncDone)
 	}
 
 	return c, nil
@@ -551,9 +554,44 @@ func (c *Client) backgroundSync() {
 		case <-c.stopSync:
 			return
 		case <-ticker.C:
+			// Create cancellable context
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = c.syncer.Sync(ctx)
+
+			// Run sync, but also listen for stop signal
+			done := make(chan struct{})
+			go func() {
+				_ = c.syncer.Sync(ctx)
+				close(done)
+			}()
+
+			select {
+			case <-done:
+				// Sync completed normally
+			case <-c.stopSync:
+				cancel() // Cancel in-flight HTTP requests
+				<-done   // Wait for Sync to return
+				return
+			}
 			cancel()
 		}
 	}
+}
+
+// ListStores returns all available stores from Engram.
+// If prefix is non-empty, filters stores by ID prefix.
+// Returns ErrOffline if Engram is not configured.
+func (c *Client) ListStores(ctx context.Context, prefix string) (*StoreListResult, error) {
+	if c.syncer == nil {
+		return nil, ErrOffline
+	}
+	return c.syncer.ListStores(ctx, prefix)
+}
+
+// GetStoreInfo returns detailed information about a specific store.
+// Returns ErrOffline if Engram is not configured.
+func (c *Client) GetStoreInfo(ctx context.Context, storeID string) (*StoreInfo, error) {
+	if c.syncer == nil {
+		return nil, ErrOffline
+	}
+	return c.syncer.GetStoreInfo(ctx, storeID)
 }

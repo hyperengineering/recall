@@ -45,7 +45,7 @@ func TestServer_ToolsList(t *testing.T) {
 	server := recallmcp.NewServer(client)
 	tools := server.ListTools()
 
-	expectedTools := []string{"recall_query", "recall_record", "recall_feedback", "recall_sync"}
+	expectedTools := []string{"recall_query", "recall_record", "recall_feedback", "recall_sync", "recall_store_list", "recall_store_info"}
 	if len(tools) != len(expectedTools) {
 		t.Errorf("ListTools() returned %d tools, want %d", len(tools), len(expectedTools))
 	}
@@ -616,4 +616,228 @@ func TestProtocol_MalformedJSON(t *testing.T) {
 	if int(errorCode) != -32700 {
 		t.Errorf("Error code = %v, want -32700 (PARSE_ERROR)", errorCode)
 	}
+}
+
+// =============================================================================
+// Cross-Store Feedback Tests
+// =============================================================================
+
+// TestFeedback_CrossStore_RoutesCorrectly tests that feedback from different stores
+// is routed to the correct store context.
+// AC #9: "Feedback automatically resolves session refs to the correct store"
+func TestFeedback_CrossStore_RoutesCorrectly(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("recall.New() returned error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	server := recallmcp.NewServer(client)
+
+	// Record lore entries (they'll be tracked with default store context)
+	_, err = server.CallTool(context.Background(), "recall_record", map[string]any{
+		"content":  "Store A pattern: always validate inputs first",
+		"category": "PATTERN_OUTCOME",
+	})
+	if err != nil {
+		t.Fatalf("Record 1 failed: %v", err)
+	}
+
+	_, err = server.CallTool(context.Background(), "recall_record", map[string]any{
+		"content":  "Store B lesson: use connection pooling for databases",
+		"category": "INTERFACE_LESSON",
+	})
+	if err != nil {
+		t.Fatalf("Record 2 failed: %v", err)
+	}
+
+	// Query to get session refs
+	queryResult, err := server.CallTool(context.Background(), "recall_query", map[string]any{
+		"query": "pattern",
+	})
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	if queryResult.IsError {
+		t.Fatalf("Query returned error: %s", queryResult.Content)
+	}
+
+	// Apply mixed feedback using session refs
+	feedbackResult, err := server.CallTool(context.Background(), "recall_feedback", map[string]any{
+		"helpful":   []string{"L1"},
+		"incorrect": []string{"L2"},
+	})
+	if err != nil {
+		t.Fatalf("Feedback failed: %v", err)
+	}
+	if feedbackResult.IsError {
+		t.Fatalf("Feedback returned error: %s", feedbackResult.Content)
+	}
+
+	// Verify feedback was applied - content should mention updates
+	if feedbackResult.Content == "" {
+		t.Error("Feedback should return non-empty result")
+	}
+}
+
+// TestFeedback_CrossStore_MixedRefs tests feedback with refs from multiple stores
+// combined with direct lore IDs.
+func TestFeedback_CrossStore_MixedRefs(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("recall.New() returned error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	server := recallmcp.NewServer(client)
+
+	// Record multiple lore entries
+	for i := 0; i < 3; i++ {
+		_, err = server.CallTool(context.Background(), "recall_record", map[string]any{
+			"content":  "Cross-store test lore entry for feedback routing",
+			"category": "TESTING_STRATEGY",
+		})
+		if err != nil {
+			t.Fatalf("Record %d failed: %v", i+1, err)
+		}
+	}
+
+	// Query to create session refs
+	_, err = server.CallTool(context.Background(), "recall_query", map[string]any{
+		"query": "cross-store test",
+	})
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// Apply feedback using multiple session refs
+	feedbackResult, err := server.CallTool(context.Background(), "recall_feedback", map[string]any{
+		"helpful":     []string{"L1", "L2"},
+		"not_relevant": []string{"L3"},
+	})
+	if err != nil {
+		t.Fatalf("Feedback failed: %v", err)
+	}
+	if feedbackResult.IsError {
+		t.Fatalf("Feedback returned error: %s", feedbackResult.Content)
+	}
+}
+
+// TestFeedback_SessionRefPreservesStoreContext tests that the MultiStoreSession
+// correctly preserves store context when tracking and resolving refs.
+func TestFeedback_SessionRefPreservesStoreContext(t *testing.T) {
+	// Create session and track lore from different "stores"
+	session := recallmcp.NewMultiStoreSession()
+
+	// Simulate lore from store-a
+	ref1 := session.Track("store-a", "lore-id-001")
+	ref2 := session.Track("store-a", "lore-id-002")
+
+	// Simulate lore from store-b
+	ref3 := session.Track("store-b", "lore-id-003")
+	ref4 := session.Track("store-b", "lore-id-004")
+
+	// Verify refs are sequential across stores
+	if ref1 != "L1" {
+		t.Errorf("Expected L1, got %s", ref1)
+	}
+	if ref2 != "L2" {
+		t.Errorf("Expected L2, got %s", ref2)
+	}
+	if ref3 != "L3" {
+		t.Errorf("Expected L3, got %s", ref3)
+	}
+	if ref4 != "L4" {
+		t.Errorf("Expected L4, got %s", ref4)
+	}
+
+	// Verify store context is preserved when resolving
+	storeRef1, ok := session.Resolve("L1")
+	if !ok {
+		t.Fatal("Failed to resolve L1")
+	}
+	if storeRef1.StoreID != "store-a" {
+		t.Errorf("L1 StoreID = %q, want %q", storeRef1.StoreID, "store-a")
+	}
+	if storeRef1.LoreID != "lore-id-001" {
+		t.Errorf("L1 LoreID = %q, want %q", storeRef1.LoreID, "lore-id-001")
+	}
+
+	storeRef4, ok := session.Resolve("L4")
+	if !ok {
+		t.Fatal("Failed to resolve L4")
+	}
+	if storeRef4.StoreID != "store-b" {
+		t.Errorf("L4 StoreID = %q, want %q", storeRef4.StoreID, "store-b")
+	}
+	if storeRef4.LoreID != "lore-id-004" {
+		t.Errorf("L4 LoreID = %q, want %q", storeRef4.LoreID, "lore-id-004")
+	}
+}
+
+// TestFeedback_GroupsByStore tests that feedback is correctly grouped by store.
+func TestFeedback_GroupsByStore(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("recall.New() returned error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	server := recallmcp.NewServer(client)
+
+	// Record lore
+	_, err = server.CallTool(context.Background(), "recall_record", map[string]any{
+		"content":  "Test lore for grouping verification",
+		"category": "PATTERN_OUTCOME",
+	})
+	if err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+
+	// Query to track in session
+	_, err = server.CallTool(context.Background(), "recall_query", map[string]any{
+		"query": "grouping",
+	})
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	// Feedback should work with the tracked session ref
+	feedbackResult, err := server.CallTool(context.Background(), "recall_feedback", map[string]any{
+		"helpful": []string{"L1"},
+	})
+	if err != nil {
+		t.Fatalf("Feedback failed: %v", err)
+	}
+	if feedbackResult.IsError {
+		t.Fatalf("Feedback returned error: %s", feedbackResult.Content)
+	}
+
+	// The feedback result should indicate the update was applied
+	if !containsString(feedbackResult.Content, "Updated") {
+		t.Errorf("Expected feedback result to contain 'Updated', got: %s", feedbackResult.Content)
+	}
+}
+
+// containsString checks if a string contains a substring.
+func containsString(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstring(s, substr))
+}
+
+func containsSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

@@ -18,6 +18,8 @@ type mockEngramClient struct {
 	pushLoreFn         func(ctx context.Context, req *PushLoreRequest) (*PushLoreResponse, error)
 	pushFeedbackFn     func(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
 	getDeltaFn         func(ctx context.Context, since time.Time) (*DeltaResult, error)
+	listStoresFn       func(ctx context.Context, prefix string) (*ListStoresResponse, error)
+	getStoreInfoFn     func(ctx context.Context, storeID string) (*StoreInfoResponse, error)
 }
 
 func (m *mockEngramClient) HealthCheck(ctx context.Context) (*HealthResponse, error) {
@@ -51,6 +53,20 @@ func (m *mockEngramClient) PushFeedback(ctx context.Context, req *PushFeedbackRe
 func (m *mockEngramClient) GetDelta(ctx context.Context, since time.Time) (*DeltaResult, error) {
 	if m.getDeltaFn != nil {
 		return m.getDeltaFn(ctx, since)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) ListStores(ctx context.Context, prefix string) (*ListStoresResponse, error) {
+	if m.listStoresFn != nil {
+		return m.listStoresFn(ctx, prefix)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) GetStoreInfo(ctx context.Context, storeID string) (*StoreInfoResponse, error) {
+	if m.getStoreInfoFn != nil {
+		return m.getStoreInfoFn(ctx, storeID)
 	}
 	return nil, errors.New("not implemented")
 }

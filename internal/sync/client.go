@@ -33,6 +33,13 @@ type EngramClient interface {
 	// GetDelta retrieves lore changes since the given timestamp.
 	// Used for incremental sync after initial bootstrap.
 	GetDelta(ctx context.Context, since time.Time) (*DeltaResult, error)
+
+	// ListStores returns all available stores.
+	// If prefix is non-empty, filters stores by ID prefix.
+	ListStores(ctx context.Context, prefix string) (*ListStoresResponse, error)
+
+	// GetStoreInfo returns detailed information about a specific store.
+	GetStoreInfo(ctx context.Context, storeID string) (*StoreInfoResponse, error)
 }
 
 // HTTPClient implements EngramClient using net/http.
@@ -220,6 +227,78 @@ func (c *HTTPClient) GetDelta(ctx context.Context, since time.Time) (*DeltaResul
 	var result DeltaResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, &recall.SyncError{Operation: "get_delta", Err: err}
+	}
+
+	return &result, nil
+}
+
+func (c *HTTPClient) ListStores(ctx context.Context, prefix string) (*ListStoresResponse, error) {
+	url := c.baseURL + "/api/v1/stores"
+	// Note: prefix filtering would be done client-side as the API doesn't support prefix parameter
+	// based on the OpenAPI spec (it just returns all stores)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "list_stores", Err: err}
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "list_stores", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, newSyncError("list_stores", resp.StatusCode, respBody)
+	}
+
+	var result ListStoresResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &recall.SyncError{Operation: "list_stores", Err: err}
+	}
+
+	// Apply prefix filter client-side if specified
+	if prefix != "" {
+		filtered := make([]StoreListItem, 0)
+		for _, s := range result.Stores {
+			if strings.HasPrefix(s.ID, prefix) {
+				filtered = append(filtered, s)
+			}
+		}
+		result.Stores = filtered
+		result.Total = len(filtered)
+	}
+
+	return &result, nil
+}
+
+func (c *HTTPClient) GetStoreInfo(ctx context.Context, storeID string) (*StoreInfoResponse, error) {
+	// URL-encode the store ID (handles "/" in path-style IDs)
+	encodedID := strings.ReplaceAll(storeID, "/", "%2F")
+	url := fmt.Sprintf("%s/api/v1/stores/%s", c.baseURL, encodedID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "get_store_info", Err: err}
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "get_store_info", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, newSyncError("get_store_info", resp.StatusCode, respBody)
+	}
+
+	var result StoreInfoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &recall.SyncError{Operation: "get_store_info", Err: err}
 	}
 
 	return &result, nil

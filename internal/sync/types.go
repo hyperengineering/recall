@@ -82,3 +82,55 @@ type LoreEntry struct {
 	UpdatedAt       string   `json:"updated_at"`
 	EmbeddingStatus string   `json:"embedding_status"`
 }
+
+// ListStoresResponse from GET /api/v1/stores
+type ListStoresResponse struct {
+	Stores []StoreListItem `json:"stores"`
+	Total  int             `json:"total"`
+}
+
+// StoreListItem represents summary information for a store.
+type StoreListItem struct {
+	ID           string `json:"id"`
+	RecordCount  int64  `json:"record_count"`
+	LastAccessed string `json:"last_accessed"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Description  string `json:"description,omitempty"`
+}
+
+// StoreInfoResponse from GET /api/v1/stores/{store_id}
+type StoreInfoResponse struct {
+	ID           string        `json:"id"`
+	Created      string        `json:"created"`
+	LastAccessed string        `json:"last_accessed"`
+	Description  string        `json:"description,omitempty"`
+	SizeBytes    int64         `json:"size_bytes"`
+	Stats        ExtendedStats `json:"stats"`
+}
+
+// ExtendedStats contains detailed statistics for a store.
+type ExtendedStats struct {
+	TotalLore         int64            `json:"total_lore"`
+	ActiveLore        int64            `json:"active_lore"`
+	DeletedLore       int64            `json:"deleted_lore"`
+	EmbeddingStats    EmbeddingStats   `json:"embedding_stats"`
+	CategoryStats     map[string]int64 `json:"category_stats"`
+	QualityStats      QualityStats     `json:"quality_stats"`
+	UniqueSourceCount int64            `json:"unique_source_count"`
+	StatsAsOf         string           `json:"stats_as_of"`
+}
+
+// EmbeddingStats contains embedding generation statistics.
+type EmbeddingStats struct {
+	Complete int64 `json:"complete"`
+	Pending  int64 `json:"pending"`
+	Failed   int64 `json:"failed"`
+}
+
+// QualityStats contains lore quality metrics.
+type QualityStats struct {
+	AverageConfidence   float64 `json:"average_confidence"`
+	ValidatedCount      int64   `json:"validated_count"`
+	HighConfidenceCount int64   `json:"high_confidence_count"`
+	LowConfidenceCount  int64   `json:"low_confidence_count"`
+}
