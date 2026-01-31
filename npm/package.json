@@ -1,0 +1,53 @@
+{
+  "name": "@hyperengineering/recall",
+  "version": "1.2.0",
+  "description": "CLI for managing experiential lore from AI agent workflows",
+  "keywords": [
+    "recall",
+    "lore",
+    "ai",
+    "mcp",
+    "cli"
+  ],
+  "homepage": "https://github.com/hyperengineering/recall",
+  "bugs": {
+    "url": "https://github.com/hyperengineering/recall/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hyperengineering/recall.git",
+    "directory": "npm"
+  },
+  "license": "MIT",
+  "author": "Hyperengineering",
+  "bin": {
+    "recall": "./bin/recall.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "test": "node --test 'test/*.test.js'"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "bin/",
+    "lib/",
+    "scripts/",
+    "vendor/",
+    "README.md"
+  ],
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "tar": "^7.4.3"
+  }
+}

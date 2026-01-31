@@ -1,0 +1,12 @@
+# Downloaded binary (created during postinstall)
+vendor/recall
+vendor/recall.exe
+
+# Download cache
+.cache/
+
+# Node modules
+node_modules/
+
+# npm package lock (not needed for libraries)
+package-lock.json

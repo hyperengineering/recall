@@ -29,7 +29,9 @@ go mod download
 mkdir -p /workspaces/recall/data
 
 # Install development tools
+echo "Installing development tools..."
 go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+curl -fsSL https://claude.ai/install.sh | bash
 
 # Build the CLI
 go build -o /workspaces/recall/bin/recall ./cmd/recall
