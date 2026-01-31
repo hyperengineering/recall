@@ -1,5 +1,7 @@
 # Recall
 
+[![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-blue?logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMCIgZmlsbD0iI0ZGRiIvPjwvc3ZnPg==)](https://github.com/hyperengineering/claude-plugins)
+
 **Persistent memory for AI agents.** Recall captures, stores, and retrieves experiential knowledge (lore) across sessions—so your AI agents learn from the past instead of starting fresh every time.
 
 ## What It Does
@@ -20,6 +22,17 @@ Recall enables AI agents to:
 - **Sync** knowledge across environments via Engram (optional)
 
 ## Installation
+
+### Claude Code Plugin (Recommended)
+
+The easiest way to use Recall with Claude Code:
+
+```
+/plugin marketplace add hyperengineering/claude-plugins
+/plugin install recall@hyperengineering
+```
+
+Restart Claude Code to activate. See [Available Tools](#using-with-claude-code-mcp) for what's included.
 
 ### Homebrew (macOS/Linux)
 
@@ -51,7 +64,7 @@ go get github.com/hyperengineering/recall
 
 ## Quick Start
 
-Recall works immediately with zero configuration—data stores in `./data/lore.db` by default.
+Recall works immediately with zero configuration—data stores in `~/.recall/stores/default/lore.db` by default.
 
 ### Record an insight
 
@@ -126,7 +139,7 @@ Add to `~/.claude/claude_desktop_config.json`:
       "command": "recall",
       "args": ["mcp"],
       "env": {
-        "RECALL_DB_PATH": "/path/to/your/lore.db",
+        "ENGRAM_STORE": "default",
         "RECALL_SOURCE_ID": "claude-code"
       }
     }
@@ -206,7 +219,7 @@ recall sync bootstrap
 | Option | Environment Variable | Default | Description |
 |--------|---------------------|---------|-------------|
 | `--store` | `ENGRAM_STORE` | `default` | Target store for operations |
-| `--lore-path` | `RECALL_DB_PATH` | `./data/lore.db` | Local database path (deprecated) |
+| `--lore-path` | `RECALL_DB_PATH` | `~/.recall/stores/<store>/lore.db` | Local database path (deprecated) |
 | `--engram-url` | `ENGRAM_URL` | — | Engram service URL |
 | `--api-key` | `ENGRAM_API_KEY` | — | Engram API key |
 | `--source-id` | `RECALL_SOURCE_ID` | hostname | Client identifier |
@@ -444,7 +457,7 @@ func main() {
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RECALL_DB_PATH` | `./data/lore.db` | Local database path (deprecated, use stores) |
+| `RECALL_DB_PATH` | `~/.recall/stores/<store>/lore.db` | Local database path (deprecated, use stores) |
 | `ENGRAM_STORE` | `default` | Target store for operations |
 | `ENGRAM_URL` | — | Engram service URL (empty = offline mode) |
 | `ENGRAM_API_KEY` | — | API key (required if ENGRAM_URL set) |
@@ -458,7 +471,7 @@ func main() {
 
 ```go
 type Config struct {
-    LocalPath    string        // Database path (deprecated, use Store)
+    LocalPath    string        // Database path (default: ~/.recall/stores/<store>/lore.db)
     Store        string        // Store ID (default: resolved via ENGRAM_STORE or "default")
     EngramURL    string        // Engram URL (empty = offline)
     APIKey       string        // Engram API key
@@ -505,12 +518,12 @@ Lore starts at 0.5 by default. Feedback from agents adjusts confidence over time
 
 ## Troubleshooting
 
-### "mkdir ./data: permission denied"
+### "mkdir ~/.recall: permission denied"
 
-Recall defaults to `./data/lore.db`. Set a different path:
+Recall stores data in `~/.recall/stores/`. Ensure your home directory is writable, or override the path:
 
 ```bash
-export RECALL_DB_PATH="$HOME/.recall/lore.db"
+export RECALL_DB_PATH="/custom/path/lore.db"
 ```
 
 ### "sync unavailable: ENGRAM_URL not configured"
