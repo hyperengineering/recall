@@ -279,6 +279,32 @@ func outputSyncDelta(cmd *cobra.Command, before, after *recall.StoreStats, durat
 	return nil
 }
 
+// SyncReinitResult for JSON output.
+type SyncReinitResult struct {
+	Source     string `json:"source"`
+	LoreCount  int    `json:"lore_count"`
+	Timestamp  string `json:"timestamp"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
+// outputReinit prints reinitialization results.
+func outputReinit(cmd *cobra.Command, result *recall.ReinitResult, duration time.Duration) error {
+	if outputJSON {
+		return outputAsJSON(cmd, SyncReinitResult{
+			Source:     result.Source,
+			LoreCount:  result.LoreCount,
+			Timestamp:  result.Timestamp.Format(time.RFC3339),
+			DurationMs: duration.Milliseconds(),
+		})
+	}
+
+	out := cmd.OutOrStdout()
+	printSuccess(out, "Reinitialization complete (took %s)", duration.Round(time.Millisecond))
+	_, _ = fmt.Fprintf(out, "  Source: %s\n", result.Source)
+	_, _ = fmt.Fprintf(out, "  Local lore count: %d\n", result.LoreCount)
+	return nil
+}
+
 // outputSessionLore prints session lore list.
 func outputSessionLore(cmd *cobra.Command, lore []recall.SessionLore) error {
 	if outputJSON {

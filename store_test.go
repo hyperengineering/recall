@@ -2,6 +2,7 @@ package recall
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1865,5 +1866,257 @@ func TestStore_DeleteLoreByID_StoreClosed(t *testing.T) {
 	err = store.DeleteLoreByID("test")
 	if err != ErrStoreClosed {
 		t.Errorf("expected ErrStoreClosed, got %v", err)
+	}
+}
+
+// ============================================================================
+// HasPendingSync tests (Story 4.6: Database Reinitialization)
+// ============================================================================
+
+// TestStore_HasPendingSync_EmptyQueue tests AC #2:
+// HasPendingSync returns 0 when sync_queue is empty.
+func TestStore_HasPendingSync_EmptyQueue(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	count, err := store.HasPendingSync()
+	if err != nil {
+		t.Fatalf("HasPendingSync failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+}
+
+// TestStore_HasPendingSync_WithInsertEntries tests AC #2:
+// HasPendingSync counts INSERT operations in sync_queue.
+func TestStore_HasPendingSync_WithInsertEntries(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert 3 lore entries (each creates an INSERT in sync_queue)
+	for i := 0; i < 3; i++ {
+		lore := &Lore{
+			ID:         fmt.Sprintf("01HQTEST0000000000000%03d", i+1),
+			Content:    fmt.Sprintf("Content %d", i+1),
+			Category:   CategoryPatternOutcome,
+			Confidence: 0.5,
+			SourceID:   "test-source",
+		}
+		if err := store.InsertLore(lore); err != nil {
+			t.Fatalf("InsertLore failed: %v", err)
+		}
+	}
+
+	count, err := store.HasPendingSync()
+	if err != nil {
+		t.Fatalf("HasPendingSync failed: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3", count)
+	}
+}
+
+// TestStore_HasPendingSync_WithFeedbackEntries tests AC #2:
+// HasPendingSync counts FEEDBACK operations in sync_queue.
+func TestStore_HasPendingSync_WithFeedbackEntries(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert a lore entry
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Clear the INSERT queue entry
+	store.db.Exec("DELETE FROM sync_queue")
+
+	// Apply feedback twice (creates 2 FEEDBACK entries)
+	store.ApplyFeedback(lore.ID, 0.08, true)
+	store.ApplyFeedback(lore.ID, 0.08, true)
+
+	count, err := store.HasPendingSync()
+	if err != nil {
+		t.Fatalf("HasPendingSync failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+}
+
+// TestStore_HasPendingSync_MixedOperations tests AC #2:
+// HasPendingSync counts both INSERT and FEEDBACK operations.
+func TestStore_HasPendingSync_MixedOperations(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert test data directly: 3 INSERT + 2 FEEDBACK = 5 total
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES
+		('lore-1', 'INSERT', '2024-01-01T00:00:00Z'),
+		('lore-2', 'INSERT', '2024-01-02T00:00:00Z'),
+		('lore-3', 'INSERT', '2024-01-03T00:00:00Z'),
+		('lore-1', 'FEEDBACK', '2024-01-04T00:00:00Z'),
+		('lore-2', 'FEEDBACK', '2024-01-05T00:00:00Z')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	count, err := store.HasPendingSync()
+	if err != nil {
+		t.Fatalf("HasPendingSync failed: %v", err)
+	}
+	if count != 5 {
+		t.Errorf("count = %d, want 5", count)
+	}
+}
+
+// TestStore_HasPendingSync_StoreClosed tests error handling:
+// HasPendingSync returns ErrStoreClosed when store is closed.
+func TestStore_HasPendingSync_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	_, err = store.HasPendingSync()
+	if err != ErrStoreClosed {
+		t.Errorf("HasPendingSync on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+// ============================================================================
+// ClearAllLore tests (Story 4.6: Database Reinitialization)
+// ============================================================================
+
+// TestStore_ClearAllLore_RemovesAllLore tests:
+// ClearAllLore removes all lore entries.
+func TestStore_ClearAllLore_RemovesAllLore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert some lore using UpsertLore (doesn't create sync queue entries)
+	for i := 0; i < 5; i++ {
+		lore := &Lore{
+			ID:         fmt.Sprintf("01HQTEST0000000000000%03d", i+1),
+			Content:    fmt.Sprintf("Content %d", i+1),
+			Category:   CategoryPatternOutcome,
+			Confidence: 0.5,
+		}
+		if err := store.UpsertLore(lore); err != nil {
+			t.Fatalf("UpsertLore failed: %v", err)
+		}
+	}
+
+	// Verify lore exists
+	stats, err := store.Stats()
+	if err != nil {
+		t.Fatalf("Stats failed: %v", err)
+	}
+	if stats.LoreCount != 5 {
+		t.Fatalf("LoreCount = %d, want 5", stats.LoreCount)
+	}
+
+	// Clear all lore
+	if err := store.ClearAllLore(); err != nil {
+		t.Fatalf("ClearAllLore failed: %v", err)
+	}
+
+	// Verify lore is cleared
+	stats, err = store.Stats()
+	if err != nil {
+		t.Fatalf("Stats failed: %v", err)
+	}
+	if stats.LoreCount != 0 {
+		t.Errorf("LoreCount = %d, want 0", stats.LoreCount)
+	}
+}
+
+// TestStore_ClearAllLore_ClearsSyncQueue tests:
+// ClearAllLore also clears the sync queue.
+func TestStore_ClearAllLore_ClearsSyncQueue(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert some sync queue entries directly
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES
+		('lore-1', 'INSERT', '2024-01-01T00:00:00Z'),
+		('lore-2', 'FEEDBACK', '2024-01-02T00:00:00Z')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert sync queue: %v", err)
+	}
+
+	// Verify sync queue has entries
+	count, err := store.HasPendingSync()
+	if err != nil {
+		t.Fatalf("HasPendingSync failed: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("pending count = %d, want 2", count)
+	}
+
+	// Clear all lore (and sync queue)
+	if err := store.ClearAllLore(); err != nil {
+		t.Fatalf("ClearAllLore failed: %v", err)
+	}
+
+	// Verify sync queue is cleared
+	count, err = store.HasPendingSync()
+	if err != nil {
+		t.Fatalf("HasPendingSync failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("pending count = %d, want 0", count)
+	}
+}
+
+// TestStore_ClearAllLore_StoreClosed tests error handling.
+func TestStore_ClearAllLore_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	err = store.ClearAllLore()
+	if err != ErrStoreClosed {
+		t.Errorf("ClearAllLore on closed store = %v, want ErrStoreClosed", err)
 	}
 }

@@ -411,6 +411,73 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 	return c.syncer.Bootstrap(ctx)
 }
 
+// Reinitialize replaces the local database with a fresh copy from Engram.
+//
+// The reinit process:
+//  1. Check for pending sync entries (aborts if any exist)
+//  2. Attempt to bootstrap from Engram
+//  3. If Engram is unreachable and opts.AllowEmpty is true, create empty database
+//  4. Return result with source, lore count, and timestamp
+//
+// Returns ErrPendingSyncExists if unsynced local changes exist.
+// Returns ErrOffline if Engram is not configured and opts.AllowEmpty is false.
+func (c *Client) Reinitialize(ctx context.Context, opts ReinitOptions) (*ReinitResult, error) {
+	// 1. Check for pending sync entries
+	pendingCount, err := c.store.HasPendingSync()
+	if err != nil {
+		return nil, fmt.Errorf("reinit: check pending sync: %w", err)
+	}
+	if pendingCount > 0 {
+		return nil, ErrPendingSyncExists
+	}
+
+	// 2. Check if we're in offline mode
+	if c.syncer == nil {
+		if !opts.AllowEmpty {
+			return nil, ErrOffline
+		}
+		// Create empty database
+		return c.reinitEmpty()
+	}
+
+	// 3. Try to bootstrap from Engram
+	err = c.syncer.Bootstrap(ctx)
+	if err != nil {
+		// Check if Engram is unreachable and we're allowed to create empty
+		if opts.AllowEmpty {
+			return c.reinitEmpty()
+		}
+		return nil, fmt.Errorf("reinit: bootstrap: %w", err)
+	}
+
+	// 4. Get stats for result
+	stats, err := c.store.Stats()
+	if err != nil {
+		return nil, fmt.Errorf("reinit: get stats: %w", err)
+	}
+
+	return &ReinitResult{
+		Source:    "engram",
+		LoreCount: stats.LoreCount,
+		Timestamp: time.Now().UTC(),
+	}, nil
+}
+
+// reinitEmpty creates an empty database by clearing all lore entries.
+func (c *Client) reinitEmpty() (*ReinitResult, error) {
+	// Clear the database by replacing with an empty snapshot
+	// Use ReplaceFromSnapshot with an empty reader to trigger the clear
+	if err := c.store.ClearAllLore(); err != nil {
+		return nil, fmt.Errorf("reinit: clear lore: %w", err)
+	}
+
+	return &ReinitResult{
+		Source:    "empty",
+		LoreCount: 0,
+		Timestamp: time.Now().UTC(),
+	}, nil
+}
+
 // Stats returns store statistics.
 func (c *Client) Stats() (*StoreStats, error) {
 	return c.store.Stats()

@@ -1,12 +1,23 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/hyperengineering/recall"
+	"github.com/hyperengineering/recall/internal/store"
 	"github.com/spf13/cobra"
+)
+
+var (
+	syncReinit bool
+	syncForce  bool
+	syncStore  string
 )
 
 var syncCmd = &cobra.Command{
@@ -18,9 +29,16 @@ Subcommands:
   push      Push local changes to Engram
   bootstrap Download full snapshot from Engram
 
+Flags:
+  --reinit  Reinitialize database from Engram (replaces all local data)
+  --force   Skip confirmation prompts (for scripting)
+
 Example:
   recall sync push
-  recall sync bootstrap`,
+  recall sync bootstrap
+  recall sync --reinit
+  recall sync --reinit --force`,
+	RunE: runSync,
 }
 
 var syncPushCmd = &cobra.Command{
@@ -76,13 +94,35 @@ Example:
 }
 
 func init() {
+	syncCmd.Flags().BoolVar(&syncReinit, "reinit", false, "Reinitialize database from Engram")
+	syncCmd.Flags().BoolVar(&syncForce, "force", false, "Skip confirmation prompts")
+	syncCmd.PersistentFlags().StringVar(&syncStore, "store", "", "Store ID to operate against (default: resolved from ENGRAM_STORE or 'default')")
 	syncCmd.AddCommand(syncPushCmd)
 	syncCmd.AddCommand(syncBootstrapCmd)
 	syncCmd.AddCommand(syncDeltaCmd)
 }
 
-func runSyncPush(cmd *cobra.Command, args []string) error {
+// loadSyncConfig loads config and applies the --store flag if set.
+func loadSyncConfig() (recall.Config, error) {
 	cfg, err := loadAndValidateConfig()
+	if err != nil {
+		return recall.Config{}, err
+	}
+
+	// Apply --store flag if set
+	if syncStore != "" {
+		if err := store.ValidateStoreID(syncStore); err != nil {
+			return recall.Config{}, fmt.Errorf("invalid store ID %q: %w", syncStore, err)
+		}
+		cfg.Store = syncStore
+		cfg.LocalPath = store.StoreDBPath(syncStore)
+	}
+
+	return cfg, nil
+}
+
+func runSyncPush(cmd *cobra.Command, args []string) error {
+	cfg, err := loadSyncConfig()
 	if err != nil {
 		return err
 	}
@@ -122,7 +162,7 @@ func runSyncPush(cmd *cobra.Command, args []string) error {
 }
 
 func runSyncBootstrap(cmd *cobra.Command, args []string) error {
-	cfg, err := loadAndValidateConfig()
+	cfg, err := loadSyncConfig()
 	if err != nil {
 		return err
 	}
@@ -159,8 +199,131 @@ func runSyncBootstrap(cmd *cobra.Command, args []string) error {
 	return outputSyncBootstrap(cmd, stats, duration)
 }
 
+// runSync handles the sync command, potentially with --reinit flag.
+func runSync(cmd *cobra.Command, args []string) error {
+	if !syncReinit {
+		// No --reinit flag, show help
+		return cmd.Help()
+	}
+
+	// --reinit mode
+	cfg, err := loadSyncConfig()
+	if err != nil {
+		return err
+	}
+
+	client, err := recall.New(cfg)
+	if err != nil {
+		return fmt.Errorf("initialize client: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	out := cmd.OutOrStdout()
+
+	// Check for pending sync entries before prompting
+	stats, err := client.Stats()
+	if err != nil {
+		return fmt.Errorf("get stats: %w", err)
+	}
+
+	if stats.PendingSync > 0 {
+		printError(out, "Cannot reinitialize: %d unsynced entries in queue", stats.PendingSync)
+		printMuted(out, "Run 'recall sync push' first to sync changes, or clear the queue manually")
+		return recall.ErrPendingSyncExists
+	}
+
+	// Prompt for confirmation unless --force
+	if !syncForce {
+		printWarning(out, "This will REPLACE ALL local lore with data from Engram.")
+		printMuted(out, "Current local lore count: %d", stats.LoreCount)
+		fmt.Fprint(out, "\nType 'yes' to continue: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		response, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read confirmation: %w", err)
+		}
+		response = strings.TrimSpace(strings.ToLower(response))
+		if response != "yes" {
+			printMuted(out, "Aborted.")
+			return nil
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	opts := recall.ReinitOptions{
+		Force: syncForce,
+	}
+
+	// Try reinit from Engram first
+	var result *recall.ReinitResult
+	var reinitErr error
+	start := time.Now()
+
+	// The closure captures and assigns to outer-scope variables (result, reinitErr)
+	// so they remain accessible after runWithSpinner completes.
+	reinitErr = runWithSpinner(out, "Reinitializing from Engram", func() error {
+		result, reinitErr = client.Reinitialize(ctx, opts)
+		return reinitErr
+	})
+
+	duration := time.Since(start)
+
+	// Handle Engram unreachable case
+	if reinitErr != nil && !errors.Is(reinitErr, recall.ErrPendingSyncExists) {
+		if cfg.IsOffline() || isNetworkError(reinitErr) {
+			// Engram unreachable - prompt for empty DB
+			if !syncForce {
+				printWarning(out, "Engram is unreachable.")
+				fmt.Fprint(out, "Create an empty database instead? Type 'yes' to continue: ")
+
+				reader := bufio.NewReader(os.Stdin)
+				response, err := reader.ReadString('\n')
+				if err != nil {
+					return fmt.Errorf("read confirmation: %w", err)
+				}
+				response = strings.TrimSpace(strings.ToLower(response))
+				if response != "yes" {
+					printMuted(out, "Aborted.")
+					return nil
+				}
+			}
+
+			// Retry with AllowEmpty
+			opts.AllowEmpty = true
+			start = time.Now()
+			reinitErr = runWithSpinner(out, "Creating empty database", func() error {
+				result, reinitErr = client.Reinitialize(ctx, opts)
+				return reinitErr
+			})
+			duration = time.Since(start)
+		}
+	}
+
+	if reinitErr != nil {
+		return fmt.Errorf("reinit: %w", reinitErr)
+	}
+
+	return outputReinit(cmd, result, duration)
+}
+
+// isNetworkError checks if an error indicates a network/connectivity issue.
+func isNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "network is unreachable") ||
+		strings.Contains(errStr, "dial tcp") ||
+		errors.Is(err, recall.ErrOffline)
+}
+
 func runSyncDelta(cmd *cobra.Command, args []string) error {
-	cfg, err := loadAndValidateConfig()
+	cfg, err := loadSyncConfig()
 	if err != nil {
 		return err
 	}

@@ -39,6 +39,9 @@ var (
 
 	// ErrSessionRefNotFound is returned when a session reference cannot be resolved.
 	ErrSessionRefNotFound = errors.New("session reference not found")
+
+	// ErrPendingSyncExists is returned when reinit is attempted with unsynced changes.
+	ErrPendingSyncExists = errors.New("pending sync entries exist; push changes first or clear queue")
 )
 
 // ValidationError is returned when configuration validation fails.

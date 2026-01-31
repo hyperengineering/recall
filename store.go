@@ -605,6 +605,55 @@ func (s *Store) Stats() (*StoreStats, error) {
 	}, nil
 }
 
+// Store metadata key constants
+const (
+	metadataKeyDescription  = "description"
+	metadataKeyCreatedAt    = "created_at"
+	metadataKeyMigratedFrom = "migrated_from"
+)
+
+// GetStoreDescription returns the store's human-readable description.
+func (s *Store) GetStoreDescription() (string, error) {
+	return s.GetMetadata(metadataKeyDescription)
+}
+
+// SetStoreDescription sets the store's human-readable description.
+func (s *Store) SetStoreDescription(description string) error {
+	return s.SetMetadata(metadataKeyDescription, description)
+}
+
+// GetStoreCreatedAt returns when the store was created.
+func (s *Store) GetStoreCreatedAt() (time.Time, error) {
+	val, err := s.GetMetadata(metadataKeyCreatedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if val == "" {
+		return time.Time{}, nil
+	}
+	// Try RFC3339 first, then SQLite datetime format
+	t, err := time.Parse(time.RFC3339, val)
+	if err != nil {
+		// SQLite datetime() format: "2006-01-02 15:04:05"
+		t, err = time.Parse("2006-01-02 15:04:05", val)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("parse created_at: %w", err)
+		}
+	}
+	return t.UTC(), nil
+}
+
+// GetStoreMigratedFrom returns the original path if this store was migrated.
+// Returns empty string for new stores.
+func (s *Store) GetStoreMigratedFrom() (string, error) {
+	return s.GetMetadata(metadataKeyMigratedFrom)
+}
+
+// SetStoreMigratedFrom records the original path for a migrated store.
+func (s *Store) SetStoreMigratedFrom(path string) error {
+	return s.SetMetadata(metadataKeyMigratedFrom, path)
+}
+
 // GetMetadata retrieves a metadata value by key.
 // Returns empty string if key not found.
 func (s *Store) GetMetadata(key string) (string, error) {
@@ -1236,6 +1285,55 @@ func (s *Store) DeleteLoreByID(id string) error {
 	}
 
 	return nil
+}
+
+// HasPendingSync returns the count of entries in the sync queue.
+// This checks for INSERT or FEEDBACK operations that haven't been synced yet.
+// Returns 0 if the queue is empty.
+func (s *Store) HasPendingSync() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return 0, ErrStoreClosed
+	}
+
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM sync_queue
+		WHERE operation IN ('INSERT', 'FEEDBACK')
+	`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("store: count pending sync: %w", err)
+	}
+	return count, nil
+}
+
+// ClearAllLore removes all lore entries and clears the sync queue.
+// Used by Reinitialize when creating an empty database.
+func (s *Store) ClearAllLore() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec("DELETE FROM lore_entries"); err != nil {
+		return fmt.Errorf("store: delete lore: %w", err)
+	}
+
+	if _, err := tx.Exec("DELETE FROM sync_queue"); err != nil {
+		return fmt.Errorf("store: clear sync queue: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 // GetLoreByIDs retrieves multiple lore entries by ID.

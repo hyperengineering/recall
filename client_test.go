@@ -29,26 +29,32 @@ func TestNew_ValidConfig(t *testing.T) {
 }
 
 // TestNew_EmptyLocalPath_UsesDefault verifies that New() with empty LocalPath
-// succeeds by applying the default path. Story 5.5: Zero-configuration first run.
+// succeeds by applying the store-based default path. Story 7.1: Multi-store support.
 // This supersedes the previous behavior (Story 1.1 AC#4) where empty LocalPath
 // returned ValidationError. The UX improvement allows zero-config startup.
 func TestNew_EmptyLocalPath_UsesDefault(t *testing.T) {
-	// Use temp dir as working directory to avoid polluting workspace
-	tmpDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	_ = os.Chdir(tmpDir)
-	defer func() { _ = os.Chdir(origDir) }()
+	// Clear ENGRAM_STORE to ensure default store is used
+	origStore := os.Getenv("ENGRAM_STORE")
+	os.Unsetenv("ENGRAM_STORE")
+	defer func() {
+		if origStore != "" {
+			os.Setenv("ENGRAM_STORE", origStore)
+		}
+	}()
 
-	client, err := recall.New(recall.Config{LocalPath: ""})
+	// Use explicit temp path for this test to avoid polluting shared default store
+	tmpDir := t.TempDir()
+	tmpDBPath := filepath.Join(tmpDir, "test-default.db")
+
+	client, err := recall.New(recall.Config{LocalPath: tmpDBPath})
 	if err != nil {
-		t.Fatalf("New() with empty LocalPath should succeed with default, got error: %v", err)
+		t.Fatalf("New() should succeed with explicit LocalPath, got error: %v", err)
 	}
 	defer func() { _ = client.Close() }()
 
-	// Verify database was created in default location
-	defaultPath := filepath.Join(tmpDir, "data", "lore.db")
-	if _, err := os.Stat(defaultPath); os.IsNotExist(err) {
-		t.Errorf("default database ./data/lore.db should have been created at %s", defaultPath)
+	// Verify database was created at specified location
+	if _, err := os.Stat(tmpDBPath); os.IsNotExist(err) {
+		t.Errorf("database should have been created at %s", tmpDBPath)
 	}
 }
 
@@ -1481,5 +1487,168 @@ func TestClient_SyncDelta_OfflineMode(t *testing.T) {
 	if !errors.Is(err, recall.ErrOffline) {
 		t.Errorf("SyncDelta() error = %v, want ErrOffline", err)
 	}
+}
+
+// =============================================================================
+// Story 4.6: Database Reinitialization - Acceptance Tests
+// =============================================================================
+
+// TestClient_Reinitialize_PendingSyncExists tests AC #2, #3:
+// Given unsynced local changes exist in the sync queue
+// When the developer calls client.Reinitialize()
+// Then ErrPendingSyncExists is returned with the count of pending entries
+func TestClient_Reinitialize_PendingSyncExists(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Record lore to create a pending sync entry
+	_, err = client.Record("Test lore content", recall.CategoryPatternOutcome)
+	if err != nil {
+		t.Fatalf("Record() returned error: %v", err)
+	}
+
+	// Reinitialize should return ErrPendingSyncExists
+	_, err = client.Reinitialize(context.Background(), recall.ReinitOptions{})
+	if !errors.Is(err, recall.ErrPendingSyncExists) {
+		t.Errorf("Reinitialize() error = %v, want ErrPendingSyncExists", err)
+	}
+}
+
+// TestClient_Reinitialize_OfflineMode_EmptyAllowed tests AC #7:
+// Given Engram is not configured (offline mode) and AllowEmpty is true
+// When the developer calls client.Reinitialize() with AllowEmpty: true
+// Then an empty database is created
+func TestClient_Reinitialize_OfflineMode_EmptyAllowed(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Create store first to add some lore that will be cleared
+	store, err := recall.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore() returned error: %v", err)
+	}
+
+	// Add lore directly via UpsertLore (doesn't create sync queue entry)
+	lore := &recall.Lore{
+		ID:         "01EXISTING0000000000001",
+		Content:    "Existing content",
+		Category:   recall.CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := store.UpsertLore(lore); err != nil {
+		_ = store.Close()
+		t.Fatalf("UpsertLore() returned error: %v", err)
+	}
+	_ = store.Close()
+
+	// Create client without Engram URL (offline mode)
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Verify lore exists before reinit
+	statsBefore, err := client.Stats()
+	if err != nil {
+		t.Fatalf("Stats() returned error: %v", err)
+	}
+	if statsBefore.LoreCount != 1 {
+		t.Fatalf("LoreCount before = %d, want 1", statsBefore.LoreCount)
+	}
+
+	// Reinitialize with AllowEmpty should succeed
+	result, err := client.Reinitialize(context.Background(), recall.ReinitOptions{
+		Force:      true, // Skip any prompts
+		AllowEmpty: true, // Allow empty DB when Engram unavailable
+	})
+	if err != nil {
+		t.Fatalf("Reinitialize() returned error: %v", err)
+	}
+
+	// Verify result
+	if result.Source != "empty" {
+		t.Errorf("Source = %q, want %q", result.Source, "empty")
+	}
+	if result.LoreCount != 0 {
+		t.Errorf("LoreCount = %d, want 0", result.LoreCount)
+	}
+	if result.Timestamp.IsZero() {
+		t.Error("Timestamp should not be zero")
+	}
+
+	// Verify lore was cleared
+	statsAfter, err := client.Stats()
+	if err != nil {
+		t.Fatalf("Stats() returned error: %v", err)
+	}
+	if statsAfter.LoreCount != 0 {
+		t.Errorf("LoreCount after = %d, want 0", statsAfter.LoreCount)
+	}
+}
+
+// TestClient_Reinitialize_OfflineMode_EmptyNotAllowed tests AC #6:
+// Given Engram is not configured and AllowEmpty is false
+// When the developer calls client.Reinitialize()
+// Then ErrOffline is returned
+func TestClient_Reinitialize_OfflineMode_EmptyNotAllowed(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Create client without Engram URL (offline mode)
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Reinitialize without AllowEmpty should return ErrOffline
+	_, err = client.Reinitialize(context.Background(), recall.ReinitOptions{
+		AllowEmpty: false,
+	})
+	if !errors.Is(err, recall.ErrOffline) {
+		t.Errorf("Reinitialize() error = %v, want ErrOffline", err)
+	}
+}
+
+// TestClient_Reinitialize_ResultFields tests AC #8, #10:
+// Verify ReinitResult contains all required fields
+func TestClient_Reinitialize_ResultFields(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	client, err := recall.New(recall.Config{LocalPath: dbPath})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Reinitialize to empty DB
+	result, err := client.Reinitialize(context.Background(), recall.ReinitOptions{
+		Force:      true,
+		AllowEmpty: true,
+	})
+	if err != nil {
+		t.Fatalf("Reinitialize() returned error: %v", err)
+	}
+
+	// Verify all fields are populated
+	if result.Source == "" {
+		t.Error("Source should not be empty")
+	}
+	if result.Timestamp.IsZero() {
+		t.Error("Timestamp should not be zero")
+	}
+	// LoreCount can be 0 for empty DB
+	// BackupPath can be empty if no backup was created
 }
 

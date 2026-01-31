@@ -86,16 +86,16 @@ func TestCLI_Record_DefaultPath(t *testing.T) {
 	// Save original env and flags
 	origDBPath := os.Getenv("RECALL_DB_PATH")
 	origEngramURL := os.Getenv("ENGRAM_URL")
+	origEngramStore := os.Getenv("ENGRAM_STORE")
 
-	// Use temp dir for default path to avoid polluting workspace
+	// Use temp dir for database to ensure fresh, isolated database
 	tmpDir := t.TempDir()
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	tmpDBPath := filepath.Join(tmpDir, "data", "lore.db")
 
-	// Clear all config - should use default ./data/lore.db
-	os.Setenv("RECALL_DB_PATH", "")
+	// Set explicit db path to use isolated temp database
+	os.Setenv("RECALL_DB_PATH", tmpDBPath)
 	os.Setenv("ENGRAM_URL", "")
+	os.Unsetenv("ENGRAM_STORE")
 	cfgLorePath = ""
 	cfgEngramURL = ""
 	cfgAPIKey = ""
@@ -105,8 +105,21 @@ func TestCLI_Record_DefaultPath(t *testing.T) {
 	recordCategory = ""
 
 	defer func() {
-		os.Setenv("RECALL_DB_PATH", origDBPath)
-		os.Setenv("ENGRAM_URL", origEngramURL)
+		if origDBPath != "" {
+			os.Setenv("RECALL_DB_PATH", origDBPath)
+		} else {
+			os.Unsetenv("RECALL_DB_PATH")
+		}
+		if origEngramURL != "" {
+			os.Setenv("ENGRAM_URL", origEngramURL)
+		} else {
+			os.Unsetenv("ENGRAM_URL")
+		}
+		if origEngramStore != "" {
+			os.Setenv("ENGRAM_STORE", origEngramStore)
+		} else {
+			os.Unsetenv("ENGRAM_STORE")
+		}
 		cfgLorePath = ""
 		cfgEngramURL = ""
 		cfgAPIKey = ""
@@ -454,25 +467,43 @@ func TestCLI_Config_EnvFallback(t *testing.T) {
 	}
 }
 
-// TestCLI_Config_DefaultPath verifies loadConfig uses default when neither flag nor env is set.
-// Story 5.5: Zero-configuration first run. Precedence: flag > env > default.
+// TestCLI_Config_DefaultPath verifies loadConfig uses store-based default when neither flag nor env is set.
+// Story 7.1: Multi-store support. Precedence: flag > env > store-based default.
 func TestCLI_Config_DefaultPath(t *testing.T) {
 	// Save original env
 	origDBPath := os.Getenv("RECALL_DB_PATH")
+	origEngramStore := os.Getenv("ENGRAM_STORE")
 
 	// Clear all config sources
-	os.Setenv("RECALL_DB_PATH", "")
+	os.Unsetenv("RECALL_DB_PATH")
+	os.Unsetenv("ENGRAM_STORE")
 	cfgLorePath = ""
 
 	defer func() {
-		os.Setenv("RECALL_DB_PATH", origDBPath)
+		if origDBPath != "" {
+			os.Setenv("RECALL_DB_PATH", origDBPath)
+		} else {
+			os.Unsetenv("RECALL_DB_PATH")
+		}
+		if origEngramStore != "" {
+			os.Setenv("ENGRAM_STORE", origEngramStore)
+		} else {
+			os.Unsetenv("ENGRAM_STORE")
+		}
 		cfgLorePath = ""
 	}()
 
 	cfg := loadConfig()
-	want := "./data/lore.db"
-	if cfg.LocalPath != want {
-		t.Errorf("loadConfig().LocalPath = %q, want %q (default)", cfg.LocalPath, want)
+	// Default store is "default", so LocalPath should contain .recall/stores/default/lore.db
+	if !strings.Contains(cfg.LocalPath, ".recall") || !strings.Contains(cfg.LocalPath, "stores") {
+		t.Errorf("loadConfig().LocalPath = %q, should contain .recall/stores (multi-store default)", cfg.LocalPath)
+	}
+	if !strings.HasSuffix(cfg.LocalPath, "lore.db") {
+		t.Errorf("loadConfig().LocalPath = %q, should end with lore.db", cfg.LocalPath)
+	}
+	// Store should be resolved to "default"
+	if cfg.Store != "default" {
+		t.Errorf("loadConfig().Store = %q, want %q", cfg.Store, "default")
 	}
 }
 
@@ -898,23 +929,37 @@ func TestCLI_Query_DefaultPath(t *testing.T) {
 	// Save original env and flags
 	origDBPath := os.Getenv("RECALL_DB_PATH")
 	origEngramURL := os.Getenv("ENGRAM_URL")
+	origEngramStore := os.Getenv("ENGRAM_STORE")
 
-	// Use temp dir for default path to avoid polluting workspace
+	// Use temp dir for database to ensure fresh, isolated database
 	tmpDir := t.TempDir()
-	origWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origWd)
+	tmpDBPath := filepath.Join(tmpDir, "data", "lore.db")
 
-	// Clear all config - should use default ./data/lore.db
-	os.Setenv("RECALL_DB_PATH", "")
+	// Set explicit db path to use isolated temp database
+	// This ensures the test has a fresh database without interfering with other tests
+	os.Setenv("RECALL_DB_PATH", tmpDBPath)
 	os.Setenv("ENGRAM_URL", "")
+	os.Unsetenv("ENGRAM_STORE")
 	cfgLorePath = ""
 	cfgEngramURL = ""
 	resetQueryFlags()
 
 	defer func() {
-		os.Setenv("RECALL_DB_PATH", origDBPath)
-		os.Setenv("ENGRAM_URL", origEngramURL)
+		if origDBPath != "" {
+			os.Setenv("RECALL_DB_PATH", origDBPath)
+		} else {
+			os.Unsetenv("RECALL_DB_PATH")
+		}
+		if origEngramURL != "" {
+			os.Setenv("ENGRAM_URL", origEngramURL)
+		} else {
+			os.Unsetenv("ENGRAM_URL")
+		}
+		if origEngramStore != "" {
+			os.Setenv("ENGRAM_STORE", origEngramStore)
+		} else {
+			os.Unsetenv("ENGRAM_STORE")
+		}
 		cfgLorePath = ""
 		cfgEngramURL = ""
 	}()

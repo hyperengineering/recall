@@ -197,3 +197,25 @@ type SyncQueueEntry struct {
 type FeedbackQueuePayload struct {
 	Outcome string `json:"outcome"` // helpful | not_relevant | incorrect
 }
+
+// ReinitOptions configures database reinitialization behavior.
+type ReinitOptions struct {
+	// Force skips confirmation prompts (for automation/scripting).
+	Force bool
+	// AllowEmpty permits creating an empty database when Engram is unreachable.
+	AllowEmpty bool
+}
+
+// ReinitResult contains the outcome of a reinitialization operation.
+type ReinitResult struct {
+	// Source indicates where data came from: "engram" or "empty"
+	Source string `json:"source"`
+	// LoreCount is the number of lore entries in the new database
+	LoreCount int `json:"lore_count"`
+	// Timestamp when the reinitialization completed
+	Timestamp time.Time `json:"timestamp"`
+	// BackupPath is the path to the backup of the old database (if created).
+	// NOTE: Currently unused. The implementation uses SQL transactions for atomicity
+	// rather than file-level backups. Reserved for future file-level backup support.
+	BackupPath string `json:"backup_path,omitempty"`
+}

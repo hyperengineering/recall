@@ -3,12 +3,14 @@ package recall
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ============================================================================
@@ -1200,5 +1202,205 @@ func TestSyncer_SyncDelta_DefaultsEmbeddingStatus(t *testing.T) {
 	// Verify EmbeddingStatus defaults to "ready"
 	if lore.EmbeddingStatus != "ready" {
 		t.Errorf("EmbeddingStatus = %q, want %q (default)", lore.EmbeddingStatus, "ready")
+	}
+}
+
+// TestSyncer_SyncDelta_UpdatesExistingEntry verifies that delta sync updates existing
+// entries instead of creating duplicates. This is the bug reported: when an entry that
+// already exists locally is returned in a delta response (due to server-side modifications
+// like confidence updates), it should UPDATE the existing row, not INSERT a duplicate.
+//
+// Bug Report: Recall Client Delta Sync Creates Duplicate Entries
+// Root Cause: INSERT without ON CONFLICT handling (or ON CONFLICT not triggering)
+func TestSyncer_SyncDelta_UpdatesExistingEntry(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Set last_sync to simulate prior bootstrap
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	// Step 1: Insert an entry (simulating bootstrap)
+	existingID := "01ARZ3NDEKTSV4RRFFQ69GEXST"
+	existingLore := &Lore{
+		ID:              existingID,
+		Content:         "Original content from bootstrap",
+		Category:        CategoryPatternOutcome,
+		Confidence:      0.50, // Original confidence
+		ValidationCount: 0,    // Original validation count
+		SourceID:        "original-source",
+		EmbeddingStatus: "ready",
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+	if err := store.InsertLore(existingLore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Verify initial count is 1
+	initialStats, err := store.Stats()
+	if err != nil {
+		t.Fatalf("Stats failed: %v", err)
+	}
+	if initialStats.LoreCount != 1 {
+		t.Fatalf("Initial LoreCount = %d, want 1", initialStats.LoreCount)
+	}
+
+	// Step 2: Delta response contains the SAME entry with updated fields
+	// (simulating server-side confidence update from feedback)
+	deltaResponse := fmt.Sprintf(`{
+		"lore": [
+			{
+				"id": %q,
+				"content": "Original content from bootstrap",
+				"category": "PATTERN_OUTCOME",
+				"confidence": 0.75,
+				"sources": [],
+				"validation_count": 3,
+				"source_id": "original-source",
+				"embedding_status": "ready",
+				"created_at": "2026-01-28T10:00:00Z",
+				"updated_at": "2026-01-29T14:30:00Z"
+			}
+		],
+		"deleted_ids": [],
+		"as_of": "2026-01-29T15:00:00Z"
+	}`, existingID)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/lore/delta" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(deltaResponse))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	// Step 3: Run delta sync
+	err = syncer.SyncDelta(context.Background())
+	if err != nil {
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+
+	// Step 4: Verify count is STILL 1 (not 2 - no duplicate)
+	finalStats, err := store.Stats()
+	if err != nil {
+		t.Fatalf("Stats failed: %v", err)
+	}
+	if finalStats.LoreCount != 1 {
+		t.Errorf("LoreCount after delta = %d, want 1 (no duplicates)", finalStats.LoreCount)
+	}
+
+	// Step 5: Verify the entry was UPDATED with new values
+	lore, err := store.Get(existingID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+
+	// Confidence should be updated from 0.50 to 0.75
+	if lore.Confidence != 0.75 {
+		t.Errorf("Confidence = %f, want 0.75 (updated value)", lore.Confidence)
+	}
+
+	// ValidationCount should be updated from 0 to 3
+	if lore.ValidationCount != 3 {
+		t.Errorf("ValidationCount = %d, want 3 (updated value)", lore.ValidationCount)
+	}
+
+}
+
+// TestSyncer_SyncDelta_MultipleUpdatesNoDuplicates verifies multiple delta syncs
+// of the same entries don't create duplicates.
+func TestSyncer_SyncDelta_MultipleUpdatesNoDuplicates(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	existingID := "01ARZ3NDEKTSV4RRFFQ69GMULT"
+
+	// Insert initial entry
+	initialLore := &Lore{
+		ID:              existingID,
+		Content:         "Initial content",
+		Category:        CategoryPatternOutcome,
+		Confidence:      0.50,
+		ValidationCount: 0,
+		SourceID:        "test-source",
+		EmbeddingStatus: "ready",
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+	if err := store.InsertLore(initialLore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Verify initial count
+	stats, _ := store.Stats()
+	if stats.LoreCount != 1 {
+		t.Fatalf("Initial count = %d, want 1", stats.LoreCount)
+	}
+
+	// Run delta sync 3 times with the same entry (simulating repeated server updates)
+	for i := 1; i <= 3; i++ {
+		deltaResponse := fmt.Sprintf(`{
+			"lore": [{
+				"id": %q,
+				"content": "Initial content",
+				"category": "PATTERN_OUTCOME",
+				"confidence": %.2f,
+				"sources": [],
+				"validation_count": %d,
+				"source_id": "test-source",
+				"embedding_status": "ready",
+				"created_at": "2026-01-28T10:00:00Z",
+				"updated_at": "2026-01-29T14:30:00Z"
+			}],
+			"deleted_ids": [],
+			"as_of": "2026-01-29T15:00:00Z"
+		}`, existingID, 0.50+float64(i)*0.1, i)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(deltaResponse))
+		}))
+
+		syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+		err = syncer.SyncDelta(context.Background())
+		server.Close()
+
+		if err != nil {
+			t.Fatalf("SyncDelta iteration %d failed: %v", i, err)
+		}
+
+		// Count should ALWAYS be 1
+		stats, _ := store.Stats()
+		if stats.LoreCount != 1 {
+			t.Errorf("After delta sync %d: LoreCount = %d, want 1", i, stats.LoreCount)
+		}
+	}
+
+	// Final verification
+	lore, err := store.Get(existingID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+
+	// Should have the values from the 3rd delta sync
+	if lore.ValidationCount != 3 {
+		t.Errorf("ValidationCount = %d, want 3", lore.ValidationCount)
+	}
+	if lore.Confidence < 0.79 || lore.Confidence > 0.81 {
+		t.Errorf("Confidence = %f, want ~0.80", lore.Confidence)
 	}
 }

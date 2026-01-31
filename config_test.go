@@ -3,6 +3,7 @@ package recall_test
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/hyperengineering/recall"
@@ -135,23 +136,41 @@ func TestConfigFromEnv_UnsetVarsDefaultToEmpty(t *testing.T) {
 	}
 }
 
-// TestDefaultConfig_IncludesLocalPath verifies DefaultConfig returns sensible default path.
-// Story 5.5: Zero-configuration first run.
+// TestDefaultConfig_IncludesLocalPath verifies DefaultConfig returns store-based default path.
+// Story 7.1: Multi-store support. Default store is "default".
 func TestDefaultConfig_IncludesLocalPath(t *testing.T) {
 	cfg := recall.DefaultConfig()
-	want := "./data/lore.db"
-	if cfg.LocalPath != want {
-		t.Errorf("DefaultConfig().LocalPath = %q, want %q", cfg.LocalPath, want)
+	// Default path should be store-based: ~/.recall/stores/default/lore.db
+	if !strings.Contains(cfg.LocalPath, ".recall") || !strings.Contains(cfg.LocalPath, "stores") {
+		t.Errorf("DefaultConfig().LocalPath = %q, should contain .recall/stores", cfg.LocalPath)
+	}
+	if !strings.HasSuffix(cfg.LocalPath, "lore.db") {
+		t.Errorf("DefaultConfig().LocalPath = %q, should end with lore.db", cfg.LocalPath)
+	}
+	if cfg.Store != "default" {
+		t.Errorf("DefaultConfig().Store = %q, want %q", cfg.Store, "default")
 	}
 }
 
-// TestWithDefaults_AppliesLocalPath verifies WithDefaults fills LocalPath when empty.
-// Story 5.5: Supersedes DEV-1 decision — UX improvement for zero-config first run.
+// TestWithDefaults_AppliesLocalPath verifies WithDefaults fills LocalPath based on resolved store.
+// Story 7.1: Multi-store support. WithDefaults resolves store and derives LocalPath.
 func TestWithDefaults_AppliesLocalPath(t *testing.T) {
+	// Clear ENGRAM_STORE to ensure default resolution
+	origStore := os.Getenv("ENGRAM_STORE")
+	os.Unsetenv("ENGRAM_STORE")
+	defer func() {
+		if origStore != "" {
+			os.Setenv("ENGRAM_STORE", origStore)
+		}
+	}()
+
 	cfg := recall.Config{}.WithDefaults()
-	want := "./data/lore.db"
-	if cfg.LocalPath != want {
-		t.Errorf("WithDefaults().LocalPath = %q, want %q", cfg.LocalPath, want)
+	// LocalPath should be derived from resolved store (default)
+	if !strings.Contains(cfg.LocalPath, ".recall") || !strings.Contains(cfg.LocalPath, "stores") {
+		t.Errorf("WithDefaults().LocalPath = %q, should contain .recall/stores", cfg.LocalPath)
+	}
+	if cfg.Store != "default" {
+		t.Errorf("WithDefaults().Store = %q, want %q", cfg.Store, "default")
 	}
 }
 
@@ -165,23 +184,33 @@ func TestWithDefaults_PreservesExplicitLocalPath(t *testing.T) {
 }
 
 // TestConfigFromEnv_WithDefaults_AppliesLocalPath verifies the common usage pattern.
-// Story 5.5: ConfigFromEnv().WithDefaults() should fill ./data/lore.db when env is unset.
+// Story 7.1: ConfigFromEnv().WithDefaults() should use store-based path when env is unset.
 func TestConfigFromEnv_WithDefaults_AppliesLocalPath(t *testing.T) {
 	// Save and clear env
 	origPath := os.Getenv("RECALL_DB_PATH")
-	_ = os.Unsetenv("RECALL_DB_PATH")
+	origStore := os.Getenv("ENGRAM_STORE")
+	os.Unsetenv("RECALL_DB_PATH")
+	os.Unsetenv("ENGRAM_STORE")
 	defer func() {
-		if origPath == "" {
-			_ = os.Unsetenv("RECALL_DB_PATH")
+		if origPath != "" {
+			os.Setenv("RECALL_DB_PATH", origPath)
 		} else {
-			_ = os.Setenv("RECALL_DB_PATH", origPath)
+			os.Unsetenv("RECALL_DB_PATH")
+		}
+		if origStore != "" {
+			os.Setenv("ENGRAM_STORE", origStore)
+		} else {
+			os.Unsetenv("ENGRAM_STORE")
 		}
 	}()
 
 	cfg := recall.ConfigFromEnv().WithDefaults()
-	want := "./data/lore.db"
-	if cfg.LocalPath != want {
-		t.Errorf("ConfigFromEnv().WithDefaults().LocalPath = %q, want %q", cfg.LocalPath, want)
+	// LocalPath should be store-based (default store)
+	if !strings.Contains(cfg.LocalPath, ".recall") || !strings.Contains(cfg.LocalPath, "stores") {
+		t.Errorf("ConfigFromEnv().WithDefaults().LocalPath = %q, should contain .recall/stores", cfg.LocalPath)
+	}
+	if cfg.Store != "default" {
+		t.Errorf("ConfigFromEnv().WithDefaults().Store = %q, want %q", cfg.Store, "default")
 	}
 }
 

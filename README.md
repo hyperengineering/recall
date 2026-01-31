@@ -225,7 +225,21 @@ Synchronize with Engram.
 ```bash
 recall sync push       # Send local changes to Engram
 recall sync bootstrap  # Download full snapshot from Engram
+recall sync --reinit   # Discard local data and re-bootstrap from Engram
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--reinit` | Discard local database and re-bootstrap from Engram. Requires confirmation unless `--force` is used. Aborts if unsynced local changes exist. |
+| `--force` | Skip confirmation prompts (useful for scripts/automation) |
+
+**Reinitialize workflow:**
+1. Checks for unsynced local changes (aborts if any exist)
+2. Prompts for confirmation (unless `--force`)
+3. Downloads fresh snapshot from Engram
+4. Replaces local database atomically
+
+If Engram is unreachable, you can create an empty database with `--force`.
 
 #### `recall session`
 
@@ -425,4 +439,13 @@ make ci          # All checks
 
 ## License
 
-MIT
+MIT License — see [LICENSE](LICENSE) for details.
+
+## Author
+
+**Lauri Jutila**
+[ljuti@nmux.dev](mailto:ljuti@nmux.dev)
+
+## Sponsorship
+
+This project is sponsored by [NeuralMux](https://neuralmux.com) and is part of the [Hyper Engineering](https://hyperengineering.com) initiative to advance the union of human creativity and machine intelligence to build systems at extremes of scale, resilience, and performance.
