@@ -1404,3 +1404,260 @@ func TestSyncer_SyncDelta_MultipleUpdatesNoDuplicates(t *testing.T) {
 		t.Errorf("Confidence = %f, want ~0.80", lore.Confidence)
 	}
 }
+
+// ============================================================================
+// Story 7.5: Multi-Store Sync Tests
+// ============================================================================
+
+// TestSyncer_Push_WithStoreID verifies Push uses store-prefixed path when storeID is set.
+// Story 7.5 AC#4: Sync operations use resolved store context.
+func TestSyncer_Push_WithStoreID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "src",
+	}
+	store.InsertLore(lore)
+
+	var receivedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"accepted":1,"merged":0,"rejected":0,"errors":[]}`))
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("my-project") // Set store context
+
+	err = syncer.Push(context.Background())
+	if err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	expected := "/api/v1/stores/my-project/lore"
+	if receivedPath != expected {
+		t.Errorf("path = %q, want %q", receivedPath, expected)
+	}
+}
+
+// TestSyncer_Push_WithEncodedStoreID verifies store ID with slashes is URL-encoded.
+// Story 7.5 AC#3: Store IDs containing "/" are URL-encoded.
+func TestSyncer_Push_WithEncodedStoreID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "src",
+	}
+	store.InsertLore(lore)
+
+	var receivedRawPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedRawPath = r.URL.RawPath
+		if receivedRawPath == "" {
+			receivedRawPath = r.URL.Path // Fallback
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"accepted":1,"merged":0,"rejected":0,"errors":[]}`))
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("neuralmux/engram") // Store ID with slash
+
+	err = syncer.Push(context.Background())
+	if err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	// Should contain URL-encoded slash
+	if !strings.Contains(receivedRawPath, "neuralmux%2Fengram") {
+		t.Errorf("path = %q, want to contain 'neuralmux%%2Fengram'", receivedRawPath)
+	}
+}
+
+// TestSyncer_Push_WithoutStoreID verifies Push uses original path when storeID is empty.
+// Story 7.5 AC#9: Backward compatibility with original paths.
+func TestSyncer_Push_WithoutStoreID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "src",
+	}
+	store.InsertLore(lore)
+
+	var receivedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"accepted":1,"merged":0,"rejected":0,"errors":[]}`))
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	// No SetStoreID call - uses default behavior
+
+	err = syncer.Push(context.Background())
+	if err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	// Should use original path
+	expected := "/api/v1/lore"
+	if receivedPath != expected {
+		t.Errorf("path = %q, want %q", receivedPath, expected)
+	}
+}
+
+// TestSyncer_SyncDelta_WithStoreID verifies SyncDelta uses store-prefixed path.
+// Story 7.5 AC#4: Sync operations use resolved store context.
+func TestSyncer_SyncDelta_WithStoreID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	var receivedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"lore": [], "deleted_ids": [], "as_of": "2026-01-29T15:00:00Z"}`))
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("my-project")
+
+	err = syncer.SyncDelta(context.Background())
+	if err != nil {
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+
+	expected := "/api/v1/stores/my-project/lore/delta"
+	if receivedPath != expected {
+		t.Errorf("path = %q, want %q", receivedPath, expected)
+	}
+}
+
+// TestSyncer_Bootstrap_WithStoreID verifies Bootstrap uses store-prefixed paths.
+// Story 7.5 AC#4: Sync operations use resolved store context.
+func TestSyncer_Bootstrap_WithStoreID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	var snapshotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/health" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"healthy","embedding_model":"test-model"}`))
+			return
+		}
+		// Capture snapshot path
+		if strings.Contains(r.URL.Path, "snapshot") {
+			snapshotPath = r.URL.Path
+			// Return invalid snapshot - we just want to verify the path
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Write([]byte("SQLite format 3\x00"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("my-project")
+
+	// Bootstrap will fail on invalid snapshot, but we captured the path
+	_ = syncer.Bootstrap(context.Background())
+
+	expected := "/api/v1/stores/my-project/lore/snapshot"
+	if snapshotPath != expected {
+		t.Errorf("snapshot path = %q, want %q", snapshotPath, expected)
+	}
+}
+
+// TestSyncer_PushFeedback_WithStoreID verifies feedback Push uses store-prefixed path.
+// Story 7.5 AC#1: Store-prefixed feedback endpoint.
+func TestSyncer_PushFeedback_WithStoreID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore
+	lore := &Lore{
+		ID:         "01HQTEST00000000000001",
+		Content:    "Test content",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "src",
+	}
+	store.InsertLore(lore)
+	// Clear INSERT, add FEEDBACK
+	store.db.Exec("DELETE FROM sync_queue")
+	store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, payload, queued_at)
+		VALUES (?, 'FEEDBACK', '{"outcome":"helpful"}', '2024-01-01T00:00:00Z')
+	`, lore.ID)
+
+	var receivedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("my-project")
+
+	err = syncer.Push(context.Background())
+	if err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	expected := "/api/v1/stores/my-project/lore/feedback"
+	if receivedPath != expected {
+		t.Errorf("path = %q, want %q", receivedPath, expected)
+	}
+}

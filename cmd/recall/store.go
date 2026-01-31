@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/hyperengineering/recall"
 	"github.com/hyperengineering/recall/internal/store"
+	"github.com/hyperengineering/recall/internal/sync"
 	"github.com/spf13/cobra"
 )
 
@@ -36,9 +38,12 @@ var storeListCmd = &cobra.Command{
 	Short: "List local stores",
 	Long: `List all local stores with statistics.
 
+Use --remote to list stores from the Engram server instead of local stores.
+
 Example:
   recall store list
-  recall store list --json`,
+  recall store list --json
+  recall store list --remote`,
 	RunE: runStoreList,
 }
 
@@ -94,9 +99,11 @@ var (
 	storeDescription   string
 	storeDeleteConfirm bool
 	storeDeleteForce   bool
+	storeListRemote    bool
 )
 
 func init() {
+	storeListCmd.Flags().BoolVar(&storeListRemote, "remote", false, "List stores from Engram server instead of local")
 	storeCreateCmd.Flags().StringVar(&storeDescription, "description", "", "Store description")
 	storeDeleteCmd.Flags().BoolVar(&storeDeleteConfirm, "confirm", false, "Confirm deletion (required)")
 	storeDeleteCmd.Flags().BoolVar(&storeDeleteForce, "force", false, "Skip interactive prompt")
@@ -122,6 +129,11 @@ type StoreListResult struct {
 }
 
 func runStoreList(cmd *cobra.Command, args []string) error {
+	// Handle --remote flag: list stores from Engram server
+	if storeListRemote {
+		return runStoreListRemote(cmd)
+	}
+
 	storeRoot := store.DefaultStoreRoot()
 
 	// Check if stores directory exists
@@ -195,38 +207,131 @@ func runStoreList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Table header
-	printInfo(out, "Local Stores (%d):", len(stores))
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "%-30s %-35s %10s %15s\n", "STORE ID", "DESCRIPTION", "LORE COUNT", "UPDATED")
-	fmt.Fprintf(out, "%-30s %-35s %10s %15s\n", strings.Repeat("-", 30), strings.Repeat("-", 35), strings.Repeat("-", 10), strings.Repeat("-", 15))
-
-	for _, s := range stores {
+	// Build table data
+	headers := []string{"STORE ID", "DESCRIPTION", "LORE COUNT", "UPDATED"}
+	rows := make([][]string, len(stores))
+	for i, s := range stores {
 		desc := s.Description
 		if len(desc) > 35 {
 			desc = desc[:32] + "..."
 		}
-
 		updated := "-"
 		if !s.UpdatedAt.IsZero() {
 			updated = formatRelativeTime(s.UpdatedAt)
 		}
-
-		fmt.Fprintf(out, "%-30s %-35s %10d %15s\n", s.ID, desc, s.LoreCount, updated)
+		rows[i] = []string{s.ID, desc, fmt.Sprintf("%d", s.LoreCount), updated}
 	}
+
+	printInfo(out, "Local Stores (%d):", len(stores))
+	fmt.Fprintln(out)
+	fmt.Fprint(out, renderTable(headers, rows))
+	fmt.Fprintln(out)
+
+	return nil
+}
+
+// RemoteStoreListEntry represents a store in remote list output.
+type RemoteStoreListEntry struct {
+	ID           string `json:"id"`
+	RecordCount  int64  `json:"record_count"`
+	LastAccessed string `json:"last_accessed,omitempty"`
+	SizeBytes    int64  `json:"size_bytes,omitempty"`
+	Description  string `json:"description,omitempty"`
+}
+
+// RemoteStoreListResult for JSON output of remote stores.
+type RemoteStoreListResult struct {
+	Stores []RemoteStoreListEntry `json:"stores"`
+	Total  int                    `json:"total"`
+}
+
+// runStoreListRemote lists stores from the Engram server.
+func runStoreListRemote(cmd *cobra.Command) error {
+	out := cmd.OutOrStdout()
+
+	// Load config to get Engram URL and API key
+	cfg, err := loadAndValidateConfig()
+	if err != nil {
+		return err
+	}
+
+	if cfg.EngramURL == "" {
+		return fmt.Errorf("ENGRAM_URL not configured\n\nSet ENGRAM_URL and ENGRAM_API_KEY to list remote stores.")
+	}
+
+	// Create HTTP client
+	client := sync.NewHTTPClient(cfg.EngramURL, cfg.APIKey, cfg.SourceID)
+
+	// Call ListStores
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := client.ListStores(ctx, "")
+	if err != nil {
+		// Check for 503 (multi-store not configured)
+		if strings.Contains(err.Error(), "503") {
+			return fmt.Errorf("multi-store support not configured on Engram server\n\nContact your Engram administrator to enable multi-store support.")
+		}
+		return fmt.Errorf("list remote stores: %w", err)
+	}
+
+	if outputJSON {
+		// Convert to RemoteStoreListEntry for consistent output
+		entries := make([]RemoteStoreListEntry, len(result.Stores))
+		for i, s := range result.Stores {
+			entries[i] = RemoteStoreListEntry{
+				ID:           s.ID,
+				RecordCount:  s.RecordCount,
+				LastAccessed: s.LastAccessed,
+				SizeBytes:    s.SizeBytes,
+				Description:  s.Description,
+			}
+		}
+		return outputAsJSON(cmd, RemoteStoreListResult{Stores: entries, Total: result.Total})
+	}
+
+	if len(result.Stores) == 0 {
+		printWarning(out, "No remote stores found on Engram.")
+		return nil
+	}
+
+	// Build table data
+	headers := []string{"STORE ID", "DESCRIPTION", "RECORD COUNT", "LAST ACCESSED"}
+	rows := make([][]string, len(result.Stores))
+	for i, s := range result.Stores {
+		desc := s.Description
+		if len(desc) > 35 {
+			desc = desc[:32] + "..."
+		}
+		lastAccessed := "-"
+		if s.LastAccessed != "" {
+			if t, err := time.Parse(time.RFC3339, s.LastAccessed); err == nil {
+				lastAccessed = formatRelativeTime(t)
+			}
+		}
+		rows[i] = []string{s.ID, desc, fmt.Sprintf("%d", s.RecordCount), lastAccessed}
+	}
+
+	printInfo(out, "Remote Stores on Engram (%d):", result.Total)
+	fmt.Fprintln(out)
+	fmt.Fprint(out, renderTable(headers, rows))
+	fmt.Fprintln(out)
 
 	return nil
 }
 
 // StoreCreateResult for JSON output.
 type StoreCreateResult struct {
-	ID          string `json:"id"`
-	Description string `json:"description,omitempty"`
-	Location    string `json:"location"`
+	ID            string `json:"id"`
+	Description   string `json:"description,omitempty"`
+	Location      string `json:"location"`
+	RemoteCreated bool   `json:"remote_created,omitempty"`
+	RemoteWarning string `json:"remote_warning,omitempty"`
 }
 
 func runStoreCreate(cmd *cobra.Command, args []string) error {
 	storeID := args[0]
+	out := cmd.OutOrStdout()
 
 	// Validate store ID for creation (rejects reserved IDs)
 	if err := store.ValidateStoreIDForCreation(storeID); err != nil {
@@ -257,7 +362,7 @@ func runStoreCreate(cmd *cobra.Command, args []string) error {
 	// Set description if provided
 	if storeDescription != "" {
 		if err := s.SetStoreDescription(storeDescription); err != nil {
-			_ = s.Close()            // Best-effort close
+			_ = s.Close()              // Best-effort close
 			_ = os.RemoveAll(storeDir) // Best-effort cleanup
 			return fmt.Errorf("set description: %w", err)
 		}
@@ -268,28 +373,68 @@ func runStoreCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("close store: %w", err)
 	}
 
-	if outputJSON {
-		return outputAsJSON(cmd, StoreCreateResult{
-			ID:          storeID,
-			Description: storeDescription,
-			Location:    storeDir,
-		})
+	// Local store created successfully
+	result := StoreCreateResult{
+		ID:          storeID,
+		Description: storeDescription,
+		Location:    storeDir,
 	}
 
-	out := cmd.OutOrStdout()
+	// Attempt to create on Engram (best-effort, non-blocking)
+	cfg, cfgErr := loadAndValidateConfig()
+	if cfgErr == nil && cfg.EngramURL != "" {
+		client := sync.NewHTTPClient(cfg.EngramURL, cfg.APIKey, cfg.SourceID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		createReq := &sync.CreateStoreRequest{
+			StoreID:     storeID,
+			Description: storeDescription,
+		}
+
+		_, createErr := client.CreateStore(ctx, createReq)
+		if createErr == nil {
+			result.RemoteCreated = true
+		} else {
+			// Non-fatal: local creation succeeded
+			// Check if it's a 409 (already exists on remote)
+			if strings.Contains(createErr.Error(), "409") {
+				result.RemoteWarning = "already exists on Engram"
+			} else if strings.Contains(createErr.Error(), "503") {
+				result.RemoteWarning = "multi-store not configured on Engram"
+			} else {
+				result.RemoteWarning = createErr.Error()
+			}
+		}
+	}
+
+	if outputJSON {
+		return outputAsJSON(cmd, result)
+	}
+
 	printSuccess(out, "Store created: %s", storeID)
 	if storeDescription != "" {
 		fmt.Fprintf(out, "  Description: %s\n", storeDescription)
 	}
 	fmt.Fprintf(out, "  Location: %s\n", storeDir)
 
+	// Show remote status
+	if result.RemoteCreated {
+		printMuted(out, "  Also created on Engram")
+	} else if result.RemoteWarning != "" {
+		printWarning(out, "  Engram: %s", result.RemoteWarning)
+	}
+
 	return nil
 }
 
 // StoreDeleteResult for JSON output.
 type StoreDeleteResult struct {
-	ID        string `json:"id"`
-	LoreCount int    `json:"lore_count_deleted"`
+	ID            string `json:"id"`
+	LoreCount     int    `json:"lore_count_deleted"`
+	RemoteDeleted bool   `json:"remote_deleted,omitempty"`
+	RemoteWarning string `json:"remote_warning,omitempty"`
 }
 
 func runStoreDelete(cmd *cobra.Command, args []string) error {
@@ -333,8 +478,9 @@ func runStoreDelete(cmd *cobra.Command, args []string) error {
 
 	// Prompt for confirmation unless --force
 	if !storeDeleteForce {
-		printWarning(out, "This will permanently delete store '%s' and all %d lore entries.", storeID, loreCount)
-		fmt.Fprintf(out, "Type '%s' to confirm: ", storeID)
+		warning := fmt.Sprintf("This will permanently delete store '%s' and all %d lore entries.", storeID, loreCount)
+		prompt := fmt.Sprintf("Type '%s' to confirm: ", storeID)
+		fmt.Fprint(out, renderConfirmation(warning, prompt))
 
 		reader := bufio.NewReader(os.Stdin)
 		response, err := reader.ReadString('\n')
@@ -353,16 +499,47 @@ func runStoreDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("delete store: %w", err)
 	}
 
+	// Try to delete from Engram if configured
+	var remoteDeleted bool
+	var remoteWarning string
+
+	cfg, cfgErr := loadAndValidateConfig()
+	if cfgErr == nil && cfg.EngramURL != "" {
+		client := sync.NewHTTPClient(cfg.EngramURL, cfg.APIKey, cfg.SourceID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := client.DeleteStore(ctx, storeID)
+		if err == nil {
+			remoteDeleted = true
+		} else {
+			// 404 is not an error - store may not exist on Engram
+			if !strings.Contains(err.Error(), "404") && !strings.Contains(err.Error(), "not found") {
+				remoteWarning = err.Error()
+			}
+		}
+	}
+
 	if outputJSON {
 		return outputAsJSON(cmd, StoreDeleteResult{
-			ID:        storeID,
-			LoreCount: loreCount,
+			ID:            storeID,
+			LoreCount:     loreCount,
+			RemoteDeleted: remoteDeleted,
+			RemoteWarning: remoteWarning,
 		})
 	}
 
 	printSuccess(out, "Store deleted: %s", storeID)
 	if loreCount > 0 {
 		fmt.Fprintf(out, "  Deleted %d lore entries\n", loreCount)
+	}
+
+	// Show remote status
+	if remoteDeleted {
+		printMuted(out, "  Also deleted on Engram")
+	} else if remoteWarning != "" {
+		printWarning(out, "  Engram: %s", remoteWarning)
 	}
 
 	return nil
@@ -465,15 +642,15 @@ func runStoreInfo(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "  Updated: %s\n", stats.LastUpdated.Format("2006-01-02 15:04:05 MST"))
 	}
 
+	// Build statistics content
+	var statsContent strings.Builder
+	statsContent.WriteString(fmt.Sprintf("Lore Count:         %d\n", stats.LoreCount))
+	statsContent.WriteString(fmt.Sprintf("Average Confidence: %.2f", stats.AverageConfidence))
+
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Statistics:")
-	fmt.Fprintf(out, "  Lore Count: %d\n", stats.LoreCount)
-	fmt.Fprintf(out, "  Average Confidence: %.2f\n", stats.AverageConfidence)
+	fmt.Fprintln(out, renderPanel("Statistics", statsContent.String()))
 
 	if len(stats.CategoryDistribution) > 0 {
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Category Distribution:")
-
 		// Sort categories by count (descending)
 		type catCount struct {
 			cat   recall.Category
@@ -487,13 +664,19 @@ func runStoreInfo(cmd *cobra.Command, args []string) error {
 			return cats[i].count > cats[j].count
 		})
 
-		for _, cc := range cats {
+		var catContent strings.Builder
+		for i, cc := range cats {
 			var pct float64
 			if stats.LoreCount > 0 {
 				pct = float64(cc.count) / float64(stats.LoreCount) * 100
 			}
-			fmt.Fprintf(out, "  %-25s %4d (%.1f%%)\n", cc.cat, cc.count, pct)
+			catContent.WriteString(fmt.Sprintf("%-25s %4d (%.1f%%)", cc.cat, cc.count, pct))
+			if i < len(cats)-1 {
+				catContent.WriteString("\n")
+			}
 		}
+
+		fmt.Fprintln(out, renderPanel("Category Distribution", catContent.String()))
 	}
 
 	return nil

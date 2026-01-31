@@ -59,21 +59,27 @@ func TestValidateStoreID(t *testing.T) {
 }
 
 func TestValidateStoreID_MaxLength(t *testing.T) {
-	// Total max length is 256 characters
-	// Use multi-segment ID since single segment max is 64 chars
-	// 4 segments of 63 chars each + 3 slashes = 255 chars
-	seg := "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0" // 63 chars
-	longID := seg + "/" + seg + "/" + seg + "/" + seg                        // 255 chars
+	// Per OpenAPI spec, total max length is 128 characters
+	// Use multi-segment ID to test boundary
+	// 2 segments of 63 chars each + 1 slash = 127 chars (valid)
+	seg63 := "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0" // 63 chars
+	validID := seg63 + "/" + seg63                                              // 127 chars
 
-	if err := store.ValidateStoreID(longID); err != nil {
-		t.Errorf("ValidateStoreID(255 chars) unexpected error: %v", err)
+	if err := store.ValidateStoreID(validID); err != nil {
+		t.Errorf("ValidateStoreID(127 chars) unexpected error: %v", err)
 	}
 
-	// 257 chars - should be invalid (exceeds 256 limit)
-	seg64 := seg + "a" // 64 chars
-	tooLongID := seg64 + "/" + seg64 + "/" + seg64 + "/" + seg64 // 259 chars
+	// Exactly 128 chars - should be valid
+	seg64 := seg63 + "a" // 64 chars
+	exact128 := seg64 + "/" + seg64[:63] // 64 + 1 + 63 = 128 chars
+	if err := store.ValidateStoreID(exact128); err != nil {
+		t.Errorf("ValidateStoreID(128 chars) unexpected error: %v", err)
+	}
+
+	// 129 chars - should be invalid (exceeds 128 limit)
+	tooLongID := seg64 + "/" + seg64 // 64 + 1 + 64 = 129 chars
 	if err := store.ValidateStoreID(tooLongID); err == nil {
-		t.Error("ValidateStoreID(259 chars) expected error, got nil")
+		t.Error("ValidateStoreID(129 chars) expected error, got nil")
 	}
 }
 

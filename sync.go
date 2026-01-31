@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -29,6 +30,7 @@ import (
 // or by replacing recall.Syncer entirely with the interface-based version.
 type Syncer struct {
 	store     *Store
+	storeID   string // Store context for multi-store sync (Story 7.5)
 	engramURL string
 	apiKey    string
 	sourceID  string
@@ -52,6 +54,59 @@ func NewSyncer(store *Store, engramURL, apiKey, sourceID string) *Syncer {
 // SetDebugLogger sets the debug logger for the syncer.
 func (s *Syncer) SetDebugLogger(logger *DebugLogger) {
 	s.debug = logger
+}
+
+// SetStoreID sets the store context for multi-store sync operations.
+// When set, sync operations use store-prefixed API paths (e.g., /api/v1/stores/{storeID}/lore).
+// When empty, operations use the original /api/v1/lore/* paths for backward compatibility.
+func (s *Syncer) SetStoreID(storeID string) {
+	s.storeID = storeID
+}
+
+// StoreID returns the current store context.
+func (s *Syncer) StoreID() string {
+	return s.storeID
+}
+
+// encodeStoreID URL-encodes a store ID for use in path parameters.
+// Example: "neuralmux/engram" -> "neuralmux%2Fengram"
+//
+// Note: This function is duplicated in internal/sync/client.go due to import
+// cycle constraints. Both implementations must remain identical.
+func encodeStoreID(storeID string) string {
+	return url.PathEscape(storeID)
+}
+
+// lorePath returns the API path for lore operations, considering store context.
+func (s *Syncer) lorePath() string {
+	if s.storeID == "" {
+		return "/api/v1/lore"
+	}
+	return fmt.Sprintf("/api/v1/stores/%s/lore", encodeStoreID(s.storeID))
+}
+
+// feedbackPath returns the API path for feedback operations, considering store context.
+func (s *Syncer) feedbackPath() string {
+	if s.storeID == "" {
+		return "/api/v1/lore/feedback"
+	}
+	return fmt.Sprintf("/api/v1/stores/%s/lore/feedback", encodeStoreID(s.storeID))
+}
+
+// deltaPath returns the API path for delta operations, considering store context.
+func (s *Syncer) deltaPath() string {
+	if s.storeID == "" {
+		return "/api/v1/lore/delta"
+	}
+	return fmt.Sprintf("/api/v1/stores/%s/lore/delta", encodeStoreID(s.storeID))
+}
+
+// snapshotPath returns the API path for snapshot operations, considering store context.
+func (s *Syncer) snapshotPath() string {
+	if s.storeID == "" {
+		return "/api/v1/lore/snapshot"
+	}
+	return fmt.Sprintf("/api/v1/stores/%s/lore/snapshot", encodeStoreID(s.storeID))
 }
 
 // engramHealthResponse represents the Engram health check response.
@@ -252,10 +307,10 @@ func (s *Syncer) pushLoreEntries(ctx context.Context, entries []SyncQueueEntry) 
 	}
 
 	// Send to Engram
-	url := s.engramURL + "/api/v1/lore"
-	s.debug.LogRequest("POST", url, body)
+	apiURL := s.engramURL + s.lorePath()
+	s.debug.LogRequest("POST", apiURL, body)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
 	if err != nil {
 		s.debug.LogError("push_lore", err)
 		return s.failEntries(entries, err.Error())
@@ -336,11 +391,11 @@ func (s *Syncer) pushFeedbackEntries(ctx context.Context, entries []SyncQueueEnt
 	}
 
 	// Send to Engram
-	url := s.engramURL + "/api/v1/lore/feedback"
-	s.debug.LogRequest("POST", url, body)
+	apiURL := s.engramURL + s.feedbackPath()
+	s.debug.LogRequest("POST", apiURL, body)
 	s.debug.LogSync("push_feedback", fmt.Sprintf("sending %d feedback entries", len(feedbackDTOs)))
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
 	if err != nil {
 		s.debug.LogError("push_feedback", err)
 		return s.failEntries(entries, err.Error())
@@ -425,9 +480,9 @@ func (s *Syncer) Pull(ctx context.Context) error {
 		return fmt.Errorf("pull: no last_sync found (run 'recall sync bootstrap' first)")
 	}
 
-	url := s.engramURL + "/api/v1/lore/delta?since=" + lastSync
+	apiURL := s.engramURL + s.deltaPath() + "?since=" + lastSync
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return err
 	}
@@ -479,9 +534,9 @@ func (s *Syncer) SyncDelta(ctx context.Context) error {
 	}
 
 	// 2. Fetch delta from Engram
-	url := fmt.Sprintf("%s/api/v1/lore/delta?since=%s", s.engramURL, lastSync)
+	apiURL := fmt.Sprintf("%s%s?since=%s", s.engramURL, s.deltaPath(), lastSync)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return fmt.Errorf("delta: create request: %w", err)
 	}
@@ -574,7 +629,7 @@ func (s *Syncer) Bootstrap(ctx context.Context) error {
 	}
 
 	// 3. Download snapshot
-	req, err := http.NewRequestWithContext(ctx, "GET", s.engramURL+"/api/v1/lore/snapshot", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", s.engramURL+s.snapshotPath(), nil)
 	if err != nil {
 		return fmt.Errorf("bootstrap: create request: %w", err)
 	}
@@ -664,7 +719,7 @@ func (s *Syncer) Flush(ctx context.Context) error {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", s.engramURL+"/api/v1/lore", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", s.engramURL+s.lorePath(), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -703,6 +758,10 @@ func (s *Syncer) setHeaders(req *http.Request) {
 }
 
 // StoreListItem represents summary information for a store.
+// Used by Syncer.ListStores for remote store listing.
+//
+// Note: Similar types exist in internal/sync/types.go for HTTPClient use.
+// The duplication exists due to import cycle constraints between packages.
 type StoreListItem struct {
 	ID           string `json:"id"`
 	RecordCount  int64  `json:"record_count"`
@@ -799,7 +858,7 @@ func (s *Syncer) ListStores(ctx context.Context, prefix string) (*StoreListResul
 // GetStoreInfo returns detailed information about a specific store.
 func (s *Syncer) GetStoreInfo(ctx context.Context, storeID string) (*StoreInfo, error) {
 	// URL-encode the store ID (handles "/" in path-style IDs)
-	encodedID := strings.ReplaceAll(storeID, "/", "%2F")
+	encodedID := encodeStoreID(storeID)
 	url := fmt.Sprintf("%s/api/v1/stores/%s", s.engramURL, encodedID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)

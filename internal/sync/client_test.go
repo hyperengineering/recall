@@ -743,3 +743,459 @@ func TestFeedbackUpdate_JSONFormat(t *testing.T) {
 		t.Errorf("ValidationCount = %d, want %d", update.ValidationCount, 3)
 	}
 }
+
+// Story 7.5 Tests: Multi-Store Sync
+
+// TestSnapshotStats_JSONFormat verifies SnapshotStats parses per OpenAPI spec.
+func TestSnapshotStats_JSONFormat(t *testing.T) {
+	apiResponse := `{
+		"lore_count": 840,
+		"size_bytes": 1048576,
+		"generated_at": "2026-01-31T08:00:00Z",
+		"age_seconds": 9000,
+		"pending_entries": 7,
+		"available": true
+	}`
+
+	var stats SnapshotStats
+	if err := json.Unmarshal([]byte(apiResponse), &stats); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if stats.LoreCount != 840 {
+		t.Errorf("LoreCount = %d, want %d", stats.LoreCount, 840)
+	}
+	if stats.SizeBytes != 1048576 {
+		t.Errorf("SizeBytes = %d, want %d", stats.SizeBytes, 1048576)
+	}
+	if stats.AgeSeconds != 9000 {
+		t.Errorf("AgeSeconds = %d, want %d", stats.AgeSeconds, 9000)
+	}
+	if stats.PendingEntries != 7 {
+		t.Errorf("PendingEntries = %d, want %d", stats.PendingEntries, 7)
+	}
+	if !stats.Available {
+		t.Error("Available = false, want true")
+	}
+}
+
+// TestCreateStoreRequest_JSONFormat verifies CreateStoreRequest serializes per OpenAPI spec.
+func TestCreateStoreRequest_JSONFormat(t *testing.T) {
+	req := CreateStoreRequest{
+		StoreID:     "neuralmux/recall",
+		Description: "Recall client lore",
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	// Must serialize as "store_id" per OpenAPI spec (not "id")
+	if _, ok := m["store_id"]; !ok {
+		t.Error("Expected 'store_id' key in JSON")
+	}
+	if m["store_id"] != "neuralmux/recall" {
+		t.Errorf("store_id = %q, want %q", m["store_id"], "neuralmux/recall")
+	}
+	if m["description"] != "Recall client lore" {
+		t.Errorf("description = %q, want %q", m["description"], "Recall client lore")
+	}
+}
+
+// TestCreateStoreResponse_JSONFormat verifies CreateStoreResponse parses per OpenAPI spec.
+func TestCreateStoreResponse_JSONFormat(t *testing.T) {
+	apiResponse := `{
+		"id": "neuralmux/recall",
+		"created": "2026-01-31T11:00:00Z",
+		"description": "Recall client lore"
+	}`
+
+	var resp CreateStoreResponse
+	if err := json.Unmarshal([]byte(apiResponse), &resp); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if resp.ID != "neuralmux/recall" {
+		t.Errorf("ID = %q, want %q", resp.ID, "neuralmux/recall")
+	}
+	if resp.Description != "Recall client lore" {
+		t.Errorf("Description = %q, want %q", resp.Description, "Recall client lore")
+	}
+	if resp.Created.IsZero() {
+		t.Error("Created should be parsed, got zero time")
+	}
+}
+
+// TestEncodeStoreID verifies store ID URL encoding per AC#3.
+func TestEncodeStoreID(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"simple", "default", "default"},
+		{"with hyphen", "my-store", "my-store"},
+		{"single slash", "neuralmux/engram", "neuralmux%2Fengram"},
+		{"multi-level", "org/team/project", "org%2Fteam%2Fproject"},
+		{"four segments", "a/b/c/d", "a%2Fb%2Fc%2Fd"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := encodeStoreID(tt.input)
+			if got != tt.expected {
+				t.Errorf("encodeStoreID(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestHTTPClient_CreateStore_Success verifies store creation per AC#2.
+func TestHTTPClient_CreateStore_Success(t *testing.T) {
+	var receivedBody CreateStoreRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/stores" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != "POST" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&receivedBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "neuralmux/recall",
+			"created": "2026-01-31T11:00:00Z",
+			"description": "Recall client lore"
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "")
+	req := &CreateStoreRequest{
+		StoreID:     "neuralmux/recall",
+		Description: "Recall client lore",
+	}
+	result, err := client.CreateStore(context.Background(), req)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedBody.StoreID != "neuralmux/recall" {
+		t.Errorf("request StoreID = %q, want %q", receivedBody.StoreID, "neuralmux/recall")
+	}
+	if result.ID != "neuralmux/recall" {
+		t.Errorf("result ID = %q, want %q", result.ID, "neuralmux/recall")
+	}
+}
+
+// TestHTTPClient_CreateStore_Conflict verifies 409 handling per AC#2.
+func TestHTTPClient_CreateStore_Conflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error": "store already exists"}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-key", "")
+	req := &CreateStoreRequest{StoreID: "existing-store"}
+	_, err := client.CreateStore(context.Background(), req)
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var syncErr *recall.SyncError
+	if !errors.As(err, &syncErr) {
+		t.Fatalf("expected SyncError, got %T", err)
+	}
+	if syncErr.StatusCode != http.StatusConflict {
+		t.Errorf("StatusCode = %d, want %d", syncErr.StatusCode, http.StatusConflict)
+	}
+}
+
+// TestHTTPClient_CreateStore_503_MultiStoreNotConfigured verifies AC#11.
+func TestHTTPClient_CreateStore_503_MultiStoreNotConfigured(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error": "multi-store support not configured"}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-key", "")
+	req := &CreateStoreRequest{StoreID: "new-store"}
+	_, err := client.CreateStore(context.Background(), req)
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var syncErr *recall.SyncError
+	if !errors.As(err, &syncErr) {
+		t.Fatalf("expected SyncError, got %T", err)
+	}
+	if syncErr.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("StatusCode = %d, want %d", syncErr.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
+// TestHTTPClient_DeleteStore_Success verifies store deletion per AC#2.
+func TestHTTPClient_DeleteStore_Success(t *testing.T) {
+	var receivedPath string
+	var receivedConfirm string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedConfirm = r.URL.Query().Get("confirm")
+		if r.Method != "DELETE" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "")
+	err := client.DeleteStore(context.Background(), "test-store")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedPath != "/api/v1/stores/test-store" {
+		t.Errorf("path = %q, want %q", receivedPath, "/api/v1/stores/test-store")
+	}
+	if receivedConfirm != "true" {
+		t.Errorf("confirm = %q, want %q", receivedConfirm, "true")
+	}
+}
+
+// TestHTTPClient_DeleteStore_EncodedPath verifies URL encoding per AC#3.
+func TestHTTPClient_DeleteStore_EncodedPath(t *testing.T) {
+	var receivedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.RawPath // Use RawPath to see encoded form
+		if receivedPath == "" {
+			receivedPath = r.URL.Path // Fallback if not encoded
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "")
+	err := client.DeleteStore(context.Background(), "neuralmux/engram")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(receivedPath, "neuralmux%2Fengram") {
+		t.Errorf("path = %q, want to contain 'neuralmux%%2Fengram'", receivedPath)
+	}
+}
+
+// TestHTTPClient_DeleteStore_Protected verifies 403 for default store per AC#2.
+func TestHTTPClient_DeleteStore_Protected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error": "cannot delete protected store"}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-key", "")
+	err := client.DeleteStore(context.Background(), "default")
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var syncErr *recall.SyncError
+	if !errors.As(err, &syncErr) {
+		t.Fatalf("expected SyncError, got %T", err)
+	}
+	if syncErr.StatusCode != http.StatusForbidden {
+		t.Errorf("StatusCode = %d, want %d", syncErr.StatusCode, http.StatusForbidden)
+	}
+}
+
+// TestHTTPClient_PushLoreToStore_Success verifies store-prefixed push per AC#1.
+func TestHTTPClient_PushLoreToStore_Success(t *testing.T) {
+	var receivedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		if r.Method != "POST" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accepted": 3, "merged": 0, "rejected": 0, "errors": []}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "test-source")
+	req := &PushLoreRequest{
+		SourceID: "test-source",
+		Lore: []LorePayload{
+			{ID: "1", Content: "test", Category: "preference", Confidence: 0.9, CreatedAt: "2024-01-15T10:00:00Z"},
+		},
+	}
+	result, err := client.PushLoreToStore(context.Background(), "my-store", req)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedPath != "/api/v1/stores/my-store/lore" {
+		t.Errorf("path = %q, want %q", receivedPath, "/api/v1/stores/my-store/lore")
+	}
+	if result.Accepted != 3 {
+		t.Errorf("Accepted = %d, want %d", result.Accepted, 3)
+	}
+}
+
+// TestHTTPClient_PushLoreToStore_EncodedPath verifies URL encoding per AC#3.
+func TestHTTPClient_PushLoreToStore_EncodedPath(t *testing.T) {
+	var receivedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.RawPath
+		if receivedPath == "" {
+			receivedPath = r.URL.Path
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accepted": 1, "merged": 0, "rejected": 0, "errors": []}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "test-source")
+	req := &PushLoreRequest{SourceID: "test", Lore: []LorePayload{}}
+	_, err := client.PushLoreToStore(context.Background(), "org/project", req)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(receivedPath, "org%2Fproject") {
+		t.Errorf("path = %q, want to contain 'org%%2Fproject'", receivedPath)
+	}
+}
+
+// TestHTTPClient_DownloadSnapshotFromStore_Success verifies store-prefixed snapshot per AC#1.
+func TestHTTPClient_DownloadSnapshotFromStore_Success(t *testing.T) {
+	var receivedPath string
+	snapshotData := []byte("store-specific snapshot")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(snapshotData)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "test-source")
+	reader, err := client.DownloadSnapshotFromStore(context.Background(), "my-store")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer reader.Close()
+
+	if receivedPath != "/api/v1/stores/my-store/lore/snapshot" {
+		t.Errorf("path = %q, want %q", receivedPath, "/api/v1/stores/my-store/lore/snapshot")
+	}
+
+	data, _ := io.ReadAll(reader)
+	if string(data) != string(snapshotData) {
+		t.Errorf("data = %q, want %q", string(data), string(snapshotData))
+	}
+}
+
+// TestHTTPClient_GetDeltaFromStore_Success verifies store-prefixed delta per AC#1.
+func TestHTTPClient_GetDeltaFromStore_Success(t *testing.T) {
+	var receivedPath string
+	var receivedSince string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedSince = r.URL.Query().Get("since")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"lore": [], "deleted_ids": [], "as_of": "2026-01-31T12:00:00Z"}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "test-source")
+	since := time.Date(2026, 1, 28, 0, 0, 0, 0, time.UTC)
+	result, err := client.GetDeltaFromStore(context.Background(), "my-store", since)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedPath != "/api/v1/stores/my-store/lore/delta" {
+		t.Errorf("path = %q, want %q", receivedPath, "/api/v1/stores/my-store/lore/delta")
+	}
+	if receivedSince != "2026-01-28T00:00:00Z" {
+		t.Errorf("since = %q, want %q", receivedSince, "2026-01-28T00:00:00Z")
+	}
+	if result.AsOf != "2026-01-31T12:00:00Z" {
+		t.Errorf("AsOf = %q, want %q", result.AsOf, "2026-01-31T12:00:00Z")
+	}
+}
+
+// TestHTTPClient_PushFeedbackToStore_Success verifies store-prefixed feedback per AC#1.
+func TestHTTPClient_PushFeedbackToStore_Success(t *testing.T) {
+	var receivedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"updates": [{"lore_id": "1", "previous_confidence": 0.7, "current_confidence": 0.8, "validation_count": 3}]}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "test-source")
+	req := &PushFeedbackRequest{
+		SourceID: "test",
+		Feedback: []FeedbackPayload{{LoreID: "1", Type: "helpful"}},
+	}
+	result, err := client.PushFeedbackToStore(context.Background(), "my-store", req)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedPath != "/api/v1/stores/my-store/lore/feedback" {
+		t.Errorf("path = %q, want %q", receivedPath, "/api/v1/stores/my-store/lore/feedback")
+	}
+	if len(result.Updates) != 1 {
+		t.Errorf("Updates count = %d, want 1", len(result.Updates))
+	}
+}
+
+// TestHTTPClient_DeleteLoreFromStore_Success verifies store-prefixed lore deletion per AC#1.
+func TestHTTPClient_DeleteLoreFromStore_Success(t *testing.T) {
+	var receivedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		if r.Method != "DELETE" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "test-source")
+	err := client.DeleteLoreFromStore(context.Background(), "my-store", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedPath != "/api/v1/stores/my-store/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV" {
+		t.Errorf("path = %q, want %q", receivedPath, "/api/v1/stores/my-store/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	}
+}

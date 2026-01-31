@@ -22,7 +22,7 @@ var (
 // - Segments: lowercase alphanumeric and hyphens (a-z, 0-9, -)
 // - Segment length: 1-64 characters
 // - No leading/trailing hyphens, no consecutive hyphens
-// - Total max length: 256 characters
+// - Total max length: 128 characters (per MaxStoreIDLength)
 var storeIDRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\/[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?){0,3}$`)
 
 // Reserved store IDs that cannot be created (but can be targeted).
@@ -31,6 +31,9 @@ var reservedStoreIDs = map[string]bool{
 	"_system": true,
 }
 
+// MaxStoreIDLength is the maximum allowed store ID length per OpenAPI spec.
+const MaxStoreIDLength = 128
+
 // ValidateStoreID validates a store ID format.
 // Returns ErrInvalidStoreID if the ID doesn't match the required pattern.
 // Reserved IDs (like "_system") are valid for targeting but not creation.
@@ -38,7 +41,7 @@ func ValidateStoreID(id string) error {
 	if id == "" {
 		return ErrInvalidStoreID
 	}
-	if len(id) > 256 {
+	if len(id) > MaxStoreIDLength {
 		return ErrInvalidStoreID
 	}
 	// Allow reserved IDs to pass validation (they can be targeted)
