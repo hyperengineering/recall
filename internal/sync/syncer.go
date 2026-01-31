@@ -32,7 +32,12 @@ type FeedbackEntry struct {
 	Outcome string
 }
 
-// Syncer orchestrates synchronization with Engram.
+// Syncer orchestrates synchronization with Engram using dependency injection.
+//
+// Architecture Note: This is the testable Syncer designed for unit testing with
+// mocks. The production recall.Client uses recall.Syncer instead, which is directly
+// coupled to recall.Store. See recall.Syncer's documentation for the rationale
+// behind this split and future unification plans.
 type Syncer struct {
 	store  SyncStore
 	client EngramClient

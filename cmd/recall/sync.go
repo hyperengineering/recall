@@ -62,6 +62,11 @@ This is faster than bootstrap for regular updates:
   - Preserves locally recorded lore
   - Updates the last_sync timestamp on success
 
+On success, displays:
+  - Number of entries added or removed (if any)
+  - Current local lore count
+  - Duration of the sync operation
+
 Requires: Prior bootstrap (run 'recall sync bootstrap' first)
 
 Example:

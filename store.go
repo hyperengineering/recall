@@ -990,6 +990,9 @@ func (s *Store) MarkFeedbackSynced(ids []int64) error {
 }
 
 // FeedbackEntry represents a pending feedback item in the sync queue.
+// Note: This type mirrors internal/sync.FeedbackEntry. The duplication exists due to
+// an import cycle (internal/sync imports recall). A future refactor could extract
+// shared types to internal/types to eliminate this duplication.
 type FeedbackEntry struct {
 	ID      int64
 	LoreID  string
@@ -1206,7 +1209,7 @@ func (s *Store) UpsertLore(lore *Lore) error {
 		lastValidatedAtStr,
 		lore.CreatedAt.Format(time.RFC3339),
 		lore.UpdatedAt.Format(time.RFC3339),
-		nil, // synced_at - set to NULL for delta-synced entries
+		nil, // synced_at: NULL because delta-synced entries originate from Engram (already synced)
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert lore: %w", err)

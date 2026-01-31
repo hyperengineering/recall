@@ -12,6 +12,21 @@ import (
 )
 
 // Syncer handles synchronization with the Engram central service.
+//
+// Architecture Note: There are two Syncer implementations in this codebase:
+//
+//  1. recall.Syncer (this type) - Used by recall.Client for production sync.
+//     Directly coupled to recall.Store and uses net/http for Engram communication.
+//     This is the implementation used by the CLI and public API.
+//
+//  2. internal/sync.Syncer - Uses dependency injection via interfaces (SyncStore,
+//     EngramClient). Designed for unit testing with mocks. Currently used for
+//     Bootstrap testing but not fully integrated with recall.Client.
+//
+// The split exists because internal/sync.Syncer was designed for testability,
+// while recall.Syncer evolved organically with direct Store coupling. A future
+// refactor could unify these by having recall.Syncer delegate to internal/sync.Syncer,
+// or by replacing recall.Syncer entirely with the interface-based version.
 type Syncer struct {
 	store     *Store
 	engramURL string
@@ -50,6 +65,9 @@ type engramIngestRequest struct {
 }
 
 // engramLoreDTO represents lore in the Engram API format.
+// Used for both push (ingest) and delta (pull) operations.
+// Note: This type partially mirrors internal/sync.LoreEntry. See engramDeltaResponse
+// comment for explanation of why duplication exists.
 type engramLoreDTO struct {
 	ID              string   `json:"id"`
 	Content         string   `json:"content"`
@@ -65,6 +83,10 @@ type engramLoreDTO struct {
 }
 
 // engramDeltaResponse represents the delta sync response.
+// Note: This type mirrors internal/sync.DeltaResult. The duplication exists because
+// internal/sync imports the recall package (for recall.SyncError), creating an import
+// cycle that prevents sharing types. A future refactor could extract shared types
+// to a separate package (e.g., internal/types) to eliminate this duplication.
 type engramDeltaResponse struct {
 	Lore       []engramLoreDTO `json:"lore"`
 	DeletedIDs []string        `json:"deleted_ids"`
@@ -84,6 +106,10 @@ type engramFeedbackEntryDTO struct {
 }
 
 // Sync performs a full sync cycle: push pending, then pull updates.
+//
+// Deprecated: Use SyncPush() to push changes and SyncDelta() to pull updates.
+// Sync() will be removed in v2.0. The Pull() component of Sync() does not
+// apply delta changes to the local store; use SyncDelta() for full sync.
 func (s *Syncer) Sync(ctx context.Context) error {
 	if err := s.Push(ctx); err != nil {
 		return fmt.Errorf("push: %w", err)
@@ -338,6 +364,12 @@ func truncate(s string, max int) string {
 // parseRFC3339 parses an RFC3339 timestamp string, returning the zero time
 // if the string is empty or malformed. This is intentional: delta sync entries
 // may have missing timestamps, and we prefer zero-value over errors.
+//
+// Examples:
+//
+//	parseRFC3339("2024-01-15T10:30:00Z") // returns parsed time.Time
+//	parseRFC3339("")                      // returns time.Time{} (zero value)
+//	parseRFC3339("invalid")               // returns time.Time{} (no error)
 func parseRFC3339(s string) time.Time {
 	if s == "" {
 		return time.Time{}
@@ -347,21 +379,23 @@ func parseRFC3339(s string) time.Time {
 }
 
 // Pull fetches updates from Engram.
+//
+// Deprecated: Use SyncDelta() instead, which both fetches and applies delta
+// changes to the local store. Pull() only fetches but does not apply changes.
+// This method will be removed in v2.0.
+//
+// Requires prior Bootstrap() - returns error if last_sync metadata is not set.
 func (s *Syncer) Pull(ctx context.Context) error {
-	stats, err := s.store.Stats()
+	// Require last_sync to prevent calling /delta without required since parameter
+	lastSync, err := s.store.GetMetadata("last_sync")
 	if err != nil {
-		return err
+		return fmt.Errorf("pull: get last_sync: %w", err)
+	}
+	if lastSync == "" {
+		return fmt.Errorf("pull: no last_sync found (run 'recall sync bootstrap' first)")
 	}
 
-	var since string
-	if !stats.LastSync.IsZero() {
-		since = stats.LastSync.Format(time.RFC3339)
-	}
-
-	url := s.engramURL + "/api/v1/lore/delta"
-	if since != "" {
-		url += "?since=" + since
-	}
+	url := s.engramURL + "/api/v1/lore/delta?since=" + lastSync
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -408,10 +442,10 @@ func (s *Syncer) SyncDelta(ctx context.Context) error {
 	// 1. Get last_sync - require prior bootstrap
 	lastSync, err := s.store.GetMetadata("last_sync")
 	if err != nil {
-		return fmt.Errorf("sync delta: get last_sync: %w", err)
+		return fmt.Errorf("delta: get last_sync: %w", err)
 	}
 	if lastSync == "" {
-		return fmt.Errorf("sync delta: no last_sync found - run bootstrap first")
+		return fmt.Errorf("delta: no last_sync found (run 'recall sync bootstrap' first)")
 	}
 
 	// 2. Fetch delta from Engram
@@ -419,24 +453,24 @@ func (s *Syncer) SyncDelta(ctx context.Context) error {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return fmt.Errorf("sync delta: create request: %w", err)
+		return fmt.Errorf("delta: create request: %w", err)
 	}
 	s.setHeaders(req)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("sync delta: fetch: %w", err)
+		return fmt.Errorf("delta: fetch: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("sync delta: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		return fmt.Errorf("delta: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
 	}
 
 	var delta engramDeltaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&delta); err != nil {
-		return fmt.Errorf("sync delta: decode response: %w", err)
+		return fmt.Errorf("delta: decode response: %w", err)
 	}
 
 	// 3. Upsert new/updated lore entries
@@ -464,21 +498,21 @@ func (s *Syncer) SyncDelta(ctx context.Context) error {
 		lore.UpdatedAt = parseRFC3339(entry.UpdatedAt)
 
 		if err := s.store.UpsertLore(lore); err != nil {
-			return fmt.Errorf("sync delta: upsert lore %s: %w", entry.ID, err)
+			return fmt.Errorf("delta: upsert lore %s: %w", entry.ID, err)
 		}
 	}
 
 	// 4. Delete entries from deleted_ids
 	for _, id := range delta.DeletedIDs {
 		if err := s.store.DeleteLoreByID(id); err != nil {
-			return fmt.Errorf("sync delta: delete lore %s: %w", id, err)
+			return fmt.Errorf("delta: delete lore %s: %w", id, err)
 		}
 	}
 
 	// 5. Update last_sync with AsOf timestamp
 	if delta.AsOf != "" {
 		if err := s.store.SetMetadata("last_sync", delta.AsOf); err != nil {
-			return fmt.Errorf("sync delta: update last_sync: %w", err)
+			return fmt.Errorf("delta: update last_sync: %w", err)
 		}
 	}
 

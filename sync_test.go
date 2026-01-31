@@ -729,6 +729,73 @@ func TestSyncer_SourceIDHeader_OnFlush(t *testing.T) {
 }
 
 // ============================================================================
+// Syncer.Pull() tests (deprecated method)
+// ============================================================================
+
+// TestSyncer_Pull_RequiresBootstrap verifies Pull() errors when last_sync is empty.
+// Bug fix: Pull() was calling /delta without required since parameter.
+func TestSyncer_Pull_RequiresBootstrap(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Track if HTTP was called - it should NOT be
+	httpCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.Pull(context.Background())
+	if err == nil {
+		t.Fatal("expected error for missing bootstrap, got nil")
+	}
+	if !strings.Contains(err.Error(), "bootstrap") {
+		t.Errorf("error should mention bootstrap, got: %v", err)
+	}
+	if httpCalled {
+		t.Error("HTTP should not be called when last_sync is empty")
+	}
+}
+
+// TestSyncer_Pull_WithLastSync verifies Pull() works when last_sync exists.
+func TestSyncer_Pull_WithLastSync(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Set last_sync to simulate prior bootstrap
+	store.SetMetadata("last_sync", "2026-01-28T00:00:00Z")
+
+	var receivedSince string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedSince = r.URL.Query().Get("since")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"lore": [], "deleted_ids": [], "as_of": "2026-01-29T00:00:00Z"}`))
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.Pull(context.Background())
+	if err != nil {
+		t.Fatalf("Pull with last_sync should succeed: %v", err)
+	}
+	if receivedSince != "2026-01-28T00:00:00Z" {
+		t.Errorf("since = %q, want %q", receivedSince, "2026-01-28T00:00:00Z")
+	}
+}
+
+// ============================================================================
 // Syncer.SyncDelta() tests
 // Story 4.5: Delta Sync
 // ============================================================================
