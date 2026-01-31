@@ -695,3 +695,51 @@ func TestHTTPClient_GetDelta_NetworkError(t *testing.T) {
 		t.Errorf("Operation = %q, want %q", syncErr.Operation, "get_delta")
 	}
 }
+
+// TestFeedbackPayload_JSONFormat verifies request serializes with correct field names per OpenAPI spec.
+func TestFeedbackPayload_JSONFormat(t *testing.T) {
+	payload := FeedbackPayload{LoreID: "test-id-123", Type: "helpful"}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	// Must serialize as "lore_id" per OpenAPI spec
+	if _, ok := m["lore_id"]; !ok {
+		t.Error("Expected 'lore_id' key in JSON")
+	}
+
+	// Must serialize as "type" per OpenAPI spec
+	if _, ok := m["type"]; !ok {
+		t.Error("Expected 'type' key in JSON")
+	}
+}
+
+// TestFeedbackUpdate_JSONFormat verifies response parses with correct field names per OpenAPI spec.
+func TestFeedbackUpdate_JSONFormat(t *testing.T) {
+	// Simulate API response with correct field names per OpenAPI spec
+	apiResponse := `{"lore_id": "test-id-456", "previous_confidence": 0.7, "current_confidence": 0.85, "validation_count": 3}`
+
+	var update FeedbackUpdate
+	if err := json.Unmarshal([]byte(apiResponse), &update); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if update.LoreID != "test-id-456" {
+		t.Errorf("LoreID = %q, want %q", update.LoreID, "test-id-456")
+	}
+	if update.PreviousConfidence != 0.7 {
+		t.Errorf("PreviousConfidence = %v, want %v", update.PreviousConfidence, 0.7)
+	}
+	if update.CurrentConfidence != 0.85 {
+		t.Errorf("CurrentConfidence = %v, want %v", update.CurrentConfidence, 0.85)
+	}
+	if update.ValidationCount != 3 {
+		t.Errorf("ValidationCount = %d, want %d", update.ValidationCount, 3)
+	}
+}

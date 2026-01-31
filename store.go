@@ -439,7 +439,7 @@ func (s *Store) ApplyFeedbackBatch(session *Session, params FeedbackParams) (*Fe
 			result.NotFound = append(result.NotFound, ref)
 			continue
 		}
-		update, err := s.adjustConfidence(id, ConfidenceHelpfulDelta, true, now)
+		update, err := s.adjustConfidence(id, ConfidenceHelpfulDelta, true, now, string(FeedbackHelpful))
 		if err == nil {
 			result.Updated = append(result.Updated, *update)
 		}
@@ -452,7 +452,7 @@ func (s *Store) ApplyFeedbackBatch(session *Session, params FeedbackParams) (*Fe
 			result.NotFound = append(result.NotFound, ref)
 			continue
 		}
-		update, err := s.adjustConfidence(id, ConfidenceIncorrectDelta, false, now)
+		update, err := s.adjustConfidence(id, ConfidenceIncorrectDelta, false, now, string(FeedbackIncorrect))
 		if err == nil {
 			result.Updated = append(result.Updated, *update)
 		}
@@ -470,7 +470,7 @@ func (s *Store) ApplyFeedbackBatch(session *Session, params FeedbackParams) (*Fe
 	return result, nil
 }
 
-func (s *Store) adjustConfidence(id string, delta float64, incrementValidation bool, now time.Time) (*FeedbackUpdate, error) {
+func (s *Store) adjustConfidence(id string, delta float64, incrementValidation bool, now time.Time, outcome string) (*FeedbackUpdate, error) {
 	lore, err := s.getLore(id)
 	if err != nil {
 		return nil, err
@@ -502,8 +502,9 @@ func (s *Store) adjustConfidence(id string, delta float64, incrementValidation b
 		return nil, err
 	}
 
-	// Queue feedback for sync - intentionally non-failing (see Record comment)
-	_ = s.queueSync(id, "FEEDBACK", nil)
+	// Queue feedback for sync with outcome payload
+	payloadBytes, _ := json.Marshal(FeedbackQueuePayload{Outcome: outcome})
+	_ = s.queueSync(id, "FEEDBACK", payloadBytes)
 
 	return &FeedbackUpdate{
 		ID:              id,

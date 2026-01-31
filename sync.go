@@ -283,12 +283,19 @@ func (s *Syncer) pushFeedbackEntries(ctx context.Context, entries []SyncQueueEnt
 	feedbackDTOs := make([]engramFeedbackEntryDTO, 0, len(entries))
 	for _, e := range entries {
 		var payload FeedbackQueuePayload
-		if e.Payload != "" {
-			if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
-				// Skip malformed entries silently to prevent infinite retry loops
-				// on corrupted data - these entries will be cleared with the batch
-				continue
-			}
+		if e.Payload == "" {
+			// Skip entries with empty payload to prevent validation errors
+			continue
+		}
+		if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
+			// Skip malformed entries silently to prevent infinite retry loops
+			// on corrupted data - these entries will be cleared with the batch
+			continue
+		}
+		// Validate outcome is a valid enum value per OpenAPI spec
+		if payload.Outcome != "helpful" && payload.Outcome != "incorrect" && payload.Outcome != "not_relevant" {
+			// Skip entries with invalid outcome to prevent 422 validation errors
+			continue
 		}
 		feedbackDTOs = append(feedbackDTOs, engramFeedbackEntryDTO{
 			LoreID: e.LoreID,
