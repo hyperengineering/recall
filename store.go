@@ -736,7 +736,7 @@ func (s *Store) GetDetailedStats() (*DetailedStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query category distribution: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var cat string

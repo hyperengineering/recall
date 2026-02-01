@@ -115,7 +115,7 @@ func runStoreImport(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if !outputJSON {
 		if importDryRun {
@@ -123,8 +123,8 @@ func runStoreImport(cmd *cobra.Command, args []string) error {
 		} else {
 			printInfo(out, "Importing into store '%s' from %s...", storeID, importInputPath)
 		}
-		fmt.Fprintf(out, "  Format: %s\n", strings.ToUpper(format))
-		fmt.Fprintf(out, "  Strategy: %s\n", strategy)
+		_, _ = fmt.Fprintf(out, "  Format: %s\n", strings.ToUpper(format))
+		_, _ = fmt.Fprintf(out, "  Strategy: %s\n", strategy)
 	}
 
 	startTime := time.Now()
@@ -181,8 +181,8 @@ func runStoreImport(cmd *cobra.Command, args []string) error {
 	}
 	summary.WriteString(fmt.Sprintf("Errors:        %d", len(result.Errors)))
 
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, renderPanel("Import Summary", summary.String()))
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, renderPanel("Import Summary", summary.String()))
 
 	if len(result.Errors) > 0 {
 		var errContent strings.Builder
@@ -197,7 +197,7 @@ func runStoreImport(cmd *cobra.Command, args []string) error {
 			}
 			errContent.WriteString(fmt.Sprintf("- %s", err))
 		}
-		fmt.Fprintln(out, renderErrorPanel("Errors encountered", errContent.String(), ""))
+		_, _ = fmt.Fprintln(out, renderErrorPanel("Errors encountered", errContent.String(), ""))
 	}
 
 	if importDryRun {
@@ -228,7 +228,7 @@ func importJSON(ctx context.Context, s *recall.Store, inputPath string, strategy
 	if err != nil {
 		return nil, fmt.Errorf("open input file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	return s.ImportJSON(ctx, f, strategy, dryRun)
 }
@@ -240,7 +240,7 @@ func importSQLite(ctx context.Context, s *recall.Store, inputPath string, strate
 	if err != nil {
 		return nil, fmt.Errorf("open source database: %w", err)
 	}
-	defer srcStore.Close()
+	defer func() { _ = srcStore.Close() }()
 
 	// Export the source to a temp JSON file for import
 	// This reuses the streaming infrastructure
@@ -249,21 +249,21 @@ func importSQLite(ctx context.Context, s *recall.Store, inputPath string, strate
 		return nil, fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	// Export source to temp JSON
 	if err := srcStore.ExportJSON(ctx, "import", tmpFile); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return nil, fmt.Errorf("export source to JSON: %w", err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	// Import from temp JSON
 	tmpReader, err := os.Open(tmpPath)
 	if err != nil {
 		return nil, fmt.Errorf("open temp file: %w", err)
 	}
-	defer tmpReader.Close()
+	defer func() { _ = tmpReader.Close() }()
 
 	return s.ImportJSON(ctx, tmpReader, strategy, dryRun)
 }

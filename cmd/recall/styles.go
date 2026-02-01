@@ -170,10 +170,6 @@ var (
 
 	tableCellStyle = lipgloss.NewStyle().
 			Foreground(colorText)
-
-	// tableCellMutedStyle is available for muted table cells (e.g., timestamps, secondary data).
-	tableCellMutedStyle = lipgloss.NewStyle().
-				Foreground(colorMuted)
 )
 
 // ============================================================================
@@ -193,12 +189,6 @@ var (
 	errorPanelBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(colorError).
-				Padding(0, 1)
-
-	// warningPanelBorderStyle is available for warning panels (not currently used).
-	warningPanelBorderStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(colorWarning).
 				Padding(0, 1)
 )
 

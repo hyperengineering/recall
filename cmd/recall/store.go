@@ -223,8 +223,8 @@ func runStoreList(cmd *cobra.Command, args []string) error {
 	}
 
 	printInfo(out, "Local Stores (%d):", len(stores))
-	fmt.Fprintln(out)
-	fmt.Fprint(out, renderTable(headers, rows))
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprint(out, renderTable(headers, rows))
 
 	return nil
 }
@@ -255,7 +255,7 @@ func runStoreListRemote(cmd *cobra.Command) error {
 	}
 
 	if cfg.EngramURL == "" {
-		return fmt.Errorf("ENGRAM_URL not configured\n\nSet ENGRAM_URL and ENGRAM_API_KEY to list remote stores.")
+		return fmt.Errorf("ENGRAM_URL not configured; set ENGRAM_URL and ENGRAM_API_KEY to list remote stores")
 	}
 
 	// Create HTTP client
@@ -269,7 +269,7 @@ func runStoreListRemote(cmd *cobra.Command) error {
 	if err != nil {
 		// Check for 503 (multi-store not configured)
 		if strings.Contains(err.Error(), "503") {
-			return fmt.Errorf("multi-store support not configured on Engram server\n\nContact your Engram administrator to enable multi-store support.")
+			return fmt.Errorf("multi-store support not configured on Engram server; contact your Engram administrator to enable multi-store support")
 		}
 		return fmt.Errorf("list remote stores: %w", err)
 	}
@@ -312,8 +312,8 @@ func runStoreListRemote(cmd *cobra.Command) error {
 	}
 
 	printInfo(out, "Remote Stores on Engram (%d):", result.Total)
-	fmt.Fprintln(out)
-	fmt.Fprint(out, renderTable(headers, rows))
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprint(out, renderTable(headers, rows))
 
 	return nil
 }
@@ -413,9 +413,9 @@ func runStoreCreate(cmd *cobra.Command, args []string) error {
 
 	printSuccess(out, "Store created: %s", storeID)
 	if storeDescription != "" {
-		fmt.Fprintf(out, "  Description: %s\n", storeDescription)
+		_, _ = fmt.Fprintf(out, "  Description: %s\n", storeDescription)
 	}
-	fmt.Fprintf(out, "  Location: %s\n", storeDir)
+	_, _ = fmt.Fprintf(out, "  Location: %s\n", storeDir)
 
 	// Show remote status
 	if result.RemoteCreated {
@@ -478,7 +478,7 @@ func runStoreDelete(cmd *cobra.Command, args []string) error {
 	if !storeDeleteForce {
 		warning := fmt.Sprintf("This will permanently delete store '%s' and all %d lore entries.", storeID, loreCount)
 		prompt := fmt.Sprintf("Type '%s' to confirm: ", storeID)
-		fmt.Fprint(out, renderConfirmation(warning, prompt))
+		_, _ = fmt.Fprint(out, renderConfirmation(warning, prompt))
 
 		reader := bufio.NewReader(os.Stdin)
 		response, err := reader.ReadString('\n')
@@ -530,7 +530,7 @@ func runStoreDelete(cmd *cobra.Command, args []string) error {
 
 	printSuccess(out, "Store deleted: %s", storeID)
 	if loreCount > 0 {
-		fmt.Fprintf(out, "  Deleted %d lore entries\n", loreCount)
+		_, _ = fmt.Fprintf(out, "  Deleted %d lore entries\n", loreCount)
 	}
 
 	// Show remote status
@@ -590,7 +590,7 @@ func runStoreInfo(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Get metadata
 	desc, _ := s.GetStoreDescription()
@@ -630,14 +630,14 @@ func runStoreInfo(cmd *cobra.Command, args []string) error {
 	}
 
 	if desc != "" {
-		fmt.Fprintf(out, "  Description: %s\n", desc)
+		_, _ = fmt.Fprintf(out, "  Description: %s\n", desc)
 	}
-	fmt.Fprintf(out, "  Location: %s\n", storeDir)
+	_, _ = fmt.Fprintf(out, "  Location: %s\n", storeDir)
 	if !createdAt.IsZero() {
-		fmt.Fprintf(out, "  Created: %s\n", createdAt.Format("2006-01-02 15:04:05 MST"))
+		_, _ = fmt.Fprintf(out, "  Created: %s\n", createdAt.Format("2006-01-02 15:04:05 MST"))
 	}
 	if !stats.LastUpdated.IsZero() {
-		fmt.Fprintf(out, "  Updated: %s\n", stats.LastUpdated.Format("2006-01-02 15:04:05 MST"))
+		_, _ = fmt.Fprintf(out, "  Updated: %s\n", stats.LastUpdated.Format("2006-01-02 15:04:05 MST"))
 	}
 
 	// Build statistics content
@@ -645,8 +645,8 @@ func runStoreInfo(cmd *cobra.Command, args []string) error {
 	statsContent.WriteString(fmt.Sprintf("Lore Count:         %d\n", stats.LoreCount))
 	statsContent.WriteString(fmt.Sprintf("Average Confidence: %.2f", stats.AverageConfidence))
 
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, renderPanel("Statistics", statsContent.String()))
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, renderPanel("Statistics", statsContent.String()))
 
 	if len(stats.CategoryDistribution) > 0 {
 		// Sort categories by count (descending)
@@ -674,7 +674,7 @@ func runStoreInfo(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		fmt.Fprintln(out, renderPanel("Category Distribution", catContent.String()))
+		_, _ = fmt.Fprintln(out, renderPanel("Category Distribution", catContent.String()))
 	}
 
 	return nil

@@ -107,7 +107,7 @@ func (s *Store) ExportJSON(ctx context.Context, storeID string, w io.Writer) err
 	if err != nil {
 		return fmt.Errorf("query lore: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	enc := json.NewEncoder(w)
 	first := true
@@ -247,13 +247,13 @@ func (s *Store) ExportSQLite(ctx context.Context, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	destFile, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("create destination: %w", err)
 	}
-	defer destFile.Close()
+	defer func() { _ = destFile.Close() }()
 
 	if _, err := io.Copy(destFile, srcFile); err != nil {
 		_ = os.Remove(destPath)

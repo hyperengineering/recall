@@ -79,7 +79,7 @@ func runStoreExport(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Get lore count before export
 	loreCount, err := s.LoreCount()
@@ -89,7 +89,7 @@ func runStoreExport(cmd *cobra.Command, args []string) error {
 
 	if !outputJSON {
 		printInfo(out, "Exporting store '%s' to %s...", storeID, exportOutputPath)
-		fmt.Fprintf(out, "  Format: %s\n", strings.ToUpper(format))
+		_, _ = fmt.Fprintf(out, "  Format: %s\n", strings.ToUpper(format))
 	}
 
 	startTime := time.Now()
@@ -132,7 +132,7 @@ func runStoreExport(cmd *cobra.Command, args []string) error {
 	summary.WriteString(fmt.Sprintf("Duration:     %s\n", duration.Round(time.Millisecond)))
 	summary.WriteString(fmt.Sprintf("Output:       %s", exportOutputPath))
 
-	fmt.Fprintln(out, renderPanel("Export Summary", summary.String()))
+	_, _ = fmt.Fprintln(out, renderPanel("Export Summary", summary.String()))
 	printSuccess(out, "Export complete")
 
 	return nil
@@ -161,7 +161,7 @@ func exportJSON(ctx context.Context, s *recall.Store, storeID, destPath string) 
 	if err != nil {
 		return 0, fmt.Errorf("create output file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Stream export
 	if err := s.ExportJSON(ctx, storeID, f); err != nil {

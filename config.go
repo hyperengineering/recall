@@ -171,7 +171,7 @@ func migrateAndSetMetadata(envPath, storeRoot string) error {
 	if err != nil {
 		return err
 	}
-	defer newStore.Close()
+	defer func() { _ = newStore.Close() }()
 
 	// Record the source path in metadata
 	return newStore.SetStoreMigratedFrom(result.SourcePath)

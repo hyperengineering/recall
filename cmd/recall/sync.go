@@ -236,7 +236,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if !syncForce {
 		warning := fmt.Sprintf("This will REPLACE ALL local lore with data from Engram.\nCurrent local lore count: %d", stats.LoreCount)
 		prompt := "Type 'yes' to continue: "
-		fmt.Fprint(out, renderConfirmation(warning, prompt))
+		_, _ = fmt.Fprint(out, renderConfirmation(warning, prompt))
 
 		reader := bufio.NewReader(os.Stdin)
 		response, err := reader.ReadString('\n')
@@ -278,7 +278,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 			if !syncForce {
 				warning := "Engram is unreachable."
 				prompt := "Create an empty database instead? Type 'yes' to continue: "
-				fmt.Fprint(out, renderConfirmation(warning, prompt))
+				_, _ = fmt.Fprint(out, renderConfirmation(warning, prompt))
 
 				reader := bufio.NewReader(os.Stdin)
 				response, err := reader.ReadString('\n')

@@ -83,7 +83,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 
 	dest, err := os.Create(dst)
 	if err != nil {
@@ -93,7 +93,7 @@ func copyFile(src, dst string) error {
 	// Track whether we succeeded to decide cleanup
 	success := false
 	defer func() {
-		dest.Close()
+		_ = dest.Close()
 		if !success {
 			_ = os.Remove(dst) // Best-effort cleanup on failure
 		}
