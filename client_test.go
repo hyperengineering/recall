@@ -1309,7 +1309,9 @@ func TestFeedback_NotRelevantLeavesValidationUnchanged(t *testing.T) {
 }
 
 // TestFeedback_CreatesSyncQueueEntry tests AC #3:
-// Feedback operation creates a sync queue entry.
+// Feedback operation creates a sync queue entry only for synced lore.
+// Note: For locally-created lore (synced_at IS NULL), feedback is NOT queued
+// to prevent HTTP 404 errors when syncing to central.
 func TestFeedback_CreatesSyncQueueEntry(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
@@ -1332,7 +1334,7 @@ func TestFeedback_CreatesSyncQueueEntry(t *testing.T) {
 		t.Fatalf("Stats() returned error: %v", err)
 	}
 
-	// Apply feedback
+	// Apply feedback to UNSYNCED lore - should NOT queue FEEDBACK
 	_, err = client.Feedback(lore.ID, recall.Helpful)
 	if err != nil {
 		t.Fatalf("Feedback() returned error: %v", err)
@@ -1344,14 +1346,20 @@ func TestFeedback_CreatesSyncQueueEntry(t *testing.T) {
 		t.Fatalf("Stats() returned error: %v", err)
 	}
 
-	// Verify PendingSync increased by 1
-	if statsAfter.PendingSync != statsBefore.PendingSync+1 {
-		t.Errorf("PendingSync = %d, want %d", statsAfter.PendingSync, statsBefore.PendingSync+1)
+	// Verify PendingSync unchanged (feedback not queued for unsynced lore)
+	// This prevents HTTP 404 errors when syncing feedback for lore that
+	// doesn't exist on central yet.
+	if statsAfter.PendingSync != statsBefore.PendingSync {
+		t.Errorf("PendingSync = %d, want %d (unchanged - feedback not queued for unsynced lore)",
+			statsAfter.PendingSync, statsBefore.PendingSync)
 	}
 }
 
 // TestFeedback_MultipleFeedbacksQueuedOffline tests AC #5:
 // Multiple feedback operations accumulate in sync queue.
+// Note: Feedback is only queued for synced lore (to prevent HTTP 404 errors
+// when syncing feedback for lore that doesn't exist on central yet).
+// For unsynced lore, feedback updates confidence locally but doesn't queue.
 func TestFeedback_MultipleFeedbacksQueuedOffline(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
@@ -1374,7 +1382,7 @@ func TestFeedback_MultipleFeedbacksQueuedOffline(t *testing.T) {
 		t.Fatalf("Stats() returned error: %v", err)
 	}
 
-	// Apply 5 feedbacks
+	// Apply 5 feedbacks to UNSYNCED lore - should NOT queue FEEDBACK entries
 	for i := 0; i < 5; i++ {
 		_, err = client.Feedback(lore.ID, recall.Helpful)
 		if err != nil {
@@ -1388,9 +1396,10 @@ func TestFeedback_MultipleFeedbacksQueuedOffline(t *testing.T) {
 		t.Fatalf("Stats() returned error: %v", err)
 	}
 
-	// Verify PendingSync increased by 5
-	if statsAfter.PendingSync != statsBefore.PendingSync+5 {
-		t.Errorf("PendingSync = %d, want %d", statsAfter.PendingSync, statsBefore.PendingSync+5)
+	// Verify PendingSync unchanged (feedback not queued for unsynced lore)
+	if statsAfter.PendingSync != statsBefore.PendingSync {
+		t.Errorf("PendingSync = %d, want %d (unchanged - feedback not queued for unsynced lore)",
+			statsAfter.PendingSync, statsBefore.PendingSync)
 	}
 }
 

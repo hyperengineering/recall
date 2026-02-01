@@ -122,6 +122,9 @@ func TestSyncer_Push_FeedbackSuccess(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+	// Mark lore as synced (required for feedback to be sent)
+	store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", lore.ID)
 	// Clear the INSERT entry, add FEEDBACK manually
 	store.db.Exec("DELETE FROM sync_queue")
 	store.db.Exec(`
@@ -178,6 +181,10 @@ func TestSyncer_Push_MixedOperations(t *testing.T) {
 	lore2 := &Lore{ID: "01HQTEST00000000000002", Content: "Content 2", Category: CategoryEdgeCaseDiscovery, Confidence: 0.7, SourceID: "src"}
 	store.InsertLore(lore1)
 	store.InsertLore(lore2)
+
+	// Mark lore2 as synced so its FEEDBACK will be sent
+	store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", lore2.ID)
 
 	// Convert one to FEEDBACK
 	store.db.Exec("UPDATE sync_queue SET operation = 'FEEDBACK', payload = '{\"outcome\":\"incorrect\"}' WHERE lore_id = ?", lore2.ID)
@@ -1633,6 +1640,9 @@ func TestSyncer_PushFeedback_WithStoreID(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+	// Mark lore as synced (required for feedback to be sent)
+	store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", lore.ID)
 	// Clear INSERT, add FEEDBACK
 	store.db.Exec("DELETE FROM sync_queue")
 	store.db.Exec(`
@@ -1659,5 +1669,162 @@ func TestSyncer_PushFeedback_WithStoreID(t *testing.T) {
 	expected := "/api/v1/stores/my-project/lore/feedback"
 	if receivedPath != expected {
 		t.Errorf("path = %q, want %q", receivedPath, expected)
+	}
+}
+
+// ============================================================================
+// Bug Fix: Feedback Sync Fails for Locally-Created Lore
+// Story: Prevent HTTP 404 errors when syncing feedback for unsynced lore
+// ============================================================================
+
+// TestPushFeedbackEntries_FiltersUnsyncedLore verifies that FEEDBACK entries for
+// lore that hasn't been synced (synced_at IS NULL) are filtered out during push
+// and removed from the queue. This is the "belt and suspenders" approach - even
+// if a FEEDBACK entry somehow gets queued for unsynced lore, it should be cleaned
+// up during push rather than causing a 404 error.
+func TestPushFeedbackEntries_FiltersUnsyncedLore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create two lore entries: one synced, one unsynced
+	syncedLore := &Lore{
+		ID:         "01SYNCED0000000000000001",
+		Content:    "Synced lore",
+		Category:   CategoryPatternOutcome,
+		Confidence: 0.5,
+		SourceID:   "src",
+	}
+	unsyncedLore := &Lore{
+		ID:         "01UNSYNCED00000000000001",
+		Content:    "Unsynced lore",
+		Category:   CategoryEdgeCaseDiscovery,
+		Confidence: 0.6,
+		SourceID:   "src",
+	}
+
+	store.InsertLore(syncedLore)
+	store.InsertLore(unsyncedLore)
+
+	// Mark only one lore as synced
+	_, err = store.db.Exec(
+		"UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", syncedLore.ID,
+	)
+	if err != nil {
+		t.Fatalf("failed to set synced_at: %v", err)
+	}
+
+	// Clear INSERT entries, manually add FEEDBACK entries for both
+	store.db.Exec("DELETE FROM sync_queue")
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, payload, queued_at) VALUES
+		(?, 'FEEDBACK', '{"outcome":"helpful"}', '2024-01-01T00:00:00Z'),
+		(?, 'FEEDBACK', '{"outcome":"incorrect"}', '2024-01-02T00:00:00Z')
+	`, syncedLore.ID, unsyncedLore.ID)
+	if err != nil {
+		t.Fatalf("failed to insert FEEDBACK entries: %v", err)
+	}
+
+	// Track what feedback is actually sent to Engram
+	var receivedFeedback []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/lore/feedback" {
+			body, _ := io.ReadAll(r.Body)
+			var req engramFeedbackRequest
+			json.Unmarshal(body, &req)
+			for _, f := range req.Feedback {
+				receivedFeedback = append(receivedFeedback, f.LoreID)
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{}`))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.Push(context.Background())
+	if err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	// Only synced lore's feedback should have been sent
+	if len(receivedFeedback) != 1 {
+		t.Errorf("received %d feedback entries, want 1", len(receivedFeedback))
+	}
+	if len(receivedFeedback) > 0 && receivedFeedback[0] != syncedLore.ID {
+		t.Errorf("received feedback for %q, want %q", receivedFeedback[0], syncedLore.ID)
+	}
+
+	// Both queue entries should be cleared (synced one sent, unsynced one removed)
+	entries, _ := store.PendingSyncEntries()
+	if len(entries) != 0 {
+		t.Errorf("queue should be empty after push, has %d entries", len(entries))
+	}
+}
+
+// TestPushFeedbackEntries_AllUnsyncedCleared verifies that when ALL feedback
+// entries are for unsynced lore, the queue is cleared without making HTTP calls.
+func TestPushFeedbackEntries_AllUnsyncedCleared(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Create unsynced lore
+	unsyncedLore := &Lore{
+		ID:         "01UNSYNCED00000000000001",
+		Content:    "Unsynced lore",
+		Category:   CategoryEdgeCaseDiscovery,
+		Confidence: 0.6,
+		SourceID:   "src",
+	}
+	store.InsertLore(unsyncedLore)
+
+	// Clear INSERT entry, add FEEDBACK entry
+	store.db.Exec("DELETE FROM sync_queue")
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, payload, queued_at)
+		VALUES (?, 'FEEDBACK', '{"outcome":"helpful"}', '2024-01-01T00:00:00Z')
+	`, unsyncedLore.ID)
+	if err != nil {
+		t.Fatalf("failed to insert FEEDBACK entry: %v", err)
+	}
+
+	// HTTP should NOT be called since all feedback is for unsynced lore
+	httpCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/lore/feedback" {
+			httpCalled = true
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+
+	err = syncer.Push(context.Background())
+	if err != nil {
+		t.Fatalf("Push failed: %v", err)
+	}
+
+	// Queue should be cleared
+	entries, _ := store.PendingSyncEntries()
+	if len(entries) != 0 {
+		t.Errorf("queue should be empty, has %d entries", len(entries))
+	}
+
+	// HTTP should not have been called for feedback endpoint
+	if httpCalled {
+		t.Error("HTTP should not be called when all feedback is for unsynced lore")
 	}
 }

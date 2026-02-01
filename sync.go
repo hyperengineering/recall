@@ -348,9 +348,26 @@ func (s *Syncer) pushLoreEntries(ctx context.Context, entries []SyncQueueEntry) 
 }
 
 func (s *Syncer) pushFeedbackEntries(ctx context.Context, entries []SyncQueueEntry) error {
-	// Decode feedback payloads
+	// Decode feedback payloads and filter out entries for unsynced lore
 	feedbackDTOs := make([]engramFeedbackEntryDTO, 0, len(entries))
+	var unsyncedEntryIDs []int64 // Track entries to remove without sending
+
 	for _, e := range entries {
+		// Belt and suspenders: Check if lore has been synced to central.
+		// If synced_at IS NULL, the lore doesn't exist on central yet,
+		// so sending feedback would cause HTTP 404 errors.
+		lore, err := s.store.Get(e.LoreID)
+		if err != nil {
+			// Lore not found (deleted?) - remove orphaned queue entry
+			unsyncedEntryIDs = append(unsyncedEntryIDs, e.ID)
+			continue
+		}
+		if lore.SyncedAt == nil {
+			// Lore exists locally but hasn't been synced yet - remove queue entry
+			unsyncedEntryIDs = append(unsyncedEntryIDs, e.ID)
+			continue
+		}
+
 		var payload FeedbackQueuePayload
 		if e.Payload == "" {
 			// Skip entries with empty payload to prevent validation errors
@@ -361,8 +378,10 @@ func (s *Syncer) pushFeedbackEntries(ctx context.Context, entries []SyncQueueEnt
 			// on corrupted data - these entries will be cleared with the batch
 			continue
 		}
-		// Validate outcome is a valid enum value per OpenAPI spec
-		if payload.Outcome != "helpful" && payload.Outcome != "incorrect" && payload.Outcome != "not_relevant" {
+		// Validate outcome is a valid FeedbackType per OpenAPI spec
+		if payload.Outcome != string(FeedbackHelpful) &&
+			payload.Outcome != string(FeedbackIncorrect) &&
+			payload.Outcome != string(FeedbackNotRelevant) {
 			// Skip entries with invalid outcome to prevent 422 validation errors
 			continue
 		}
@@ -372,8 +391,13 @@ func (s *Syncer) pushFeedbackEntries(ctx context.Context, entries []SyncQueueEnt
 		})
 	}
 
+	// Remove orphaned feedback entries for unsynced lore from queue
+	for _, id := range unsyncedEntryIDs {
+		_ = s.store.DeleteSyncEntry(id) // Best effort cleanup
+	}
+
 	if len(feedbackDTOs) == 0 {
-		// All entries were malformed; clear them
+		// All entries were malformed or for unsynced lore; clear them
 		queueIDs := make([]int64, len(entries))
 		for i, e := range entries {
 			queueIDs[i] = e.ID

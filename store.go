@@ -376,31 +376,39 @@ func (s *Store) ApplyFeedback(loreID string, delta float64, isHelpful bool) (*Lo
 		return nil, fmt.Errorf("store: update confidence: %w", err)
 	}
 
-	// Determine outcome for sync based on feedback signal:
-	// - isHelpful=true -> "helpful" (user explicitly marked as useful)
-	// - delta < 0 -> "incorrect" (negative feedback, confidence decreased)
-	// - delta = 0 -> "not_relevant" (neutral/no impact on confidence)
-	var outcome string
-	switch {
-	case isHelpful:
-		outcome = "helpful"
-	case delta < 0:
-		outcome = "incorrect"
-	default:
-		outcome = "not_relevant"
-	}
+	// Only queue FEEDBACK for lore that has been synced to central.
+	// If synced_at IS NULL, the lore exists only locally and hasn't been
+	// pushed to Engram yet. Syncing feedback for non-existent lore would
+	// cause HTTP 404 errors on central.
+	if lore.SyncedAt != nil {
+		// Determine outcome for sync based on feedback signal:
+		// - isHelpful=true -> FeedbackHelpful (user explicitly marked as useful)
+		// - delta < 0 -> FeedbackIncorrect (negative feedback, confidence decreased)
+		// - delta = 0 -> FeedbackNotRelevant (neutral/no impact on confidence)
+		var outcome FeedbackType
+		switch {
+		case isHelpful:
+			outcome = FeedbackHelpful
+		case delta < 0:
+			outcome = FeedbackIncorrect
+		default:
+			outcome = FeedbackNotRelevant
+		}
 
-	// Queue with payload
-	payloadJSON, _ := json.Marshal(FeedbackQueuePayload{Outcome: outcome})
+		// Queue with payload
+		payloadJSON, _ := json.Marshal(FeedbackQueuePayload{Outcome: string(outcome)})
 
-	// INSERT sync_queue entry
-	_, err = tx.Exec(`
-		INSERT INTO sync_queue (lore_id, operation, payload, queued_at)
-		VALUES (?, 'FEEDBACK', ?, ?)
-	`, loreID, string(payloadJSON), nowStr)
-	if err != nil {
-		return nil, fmt.Errorf("store: enqueue sync: %w", err)
+		// INSERT sync_queue entry
+		_, err = tx.Exec(`
+			INSERT INTO sync_queue (lore_id, operation, payload, queued_at)
+			VALUES (?, 'FEEDBACK', ?, ?)
+		`, loreID, string(payloadJSON), nowStr)
+		if err != nil {
+			return nil, fmt.Errorf("store: enqueue sync: %w", err)
+		}
 	}
+	// If lore.SyncedAt is nil, skip queueing - local update succeeded,
+	// but feedback will be synced when the lore itself gets synced.
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
@@ -503,9 +511,12 @@ func (s *Store) adjustConfidence(id string, delta float64, incrementValidation b
 		return nil, err
 	}
 
-	// Queue feedback for sync with outcome payload
-	payloadBytes, _ := json.Marshal(FeedbackQueuePayload{Outcome: outcome})
-	_ = s.queueSync(id, "FEEDBACK", payloadBytes)
+	// Only queue FEEDBACK for lore that has been synced to central.
+	// Matches behavior in ApplyFeedback() - skip locally-created lore.
+	if lore.SyncedAt != nil {
+		payloadBytes, _ := json.Marshal(FeedbackQueuePayload{Outcome: outcome})
+		_ = s.queueSync(id, "FEEDBACK", payloadBytes)
+	}
 
 	return &FeedbackUpdate{
 		ID:              id,
@@ -1254,6 +1265,20 @@ func (s *Store) FailSyncEntries(queueIDs []int64, lastError string) error {
 		`, strings.Join(placeholders, ",")),
 		args...,
 	)
+	return err
+}
+
+// DeleteSyncEntry removes a single entry from the sync queue by its ID.
+// Used to clean up orphaned feedback entries when lore hasn't been synced.
+func (s *Store) DeleteSyncEntry(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	_, err := s.db.Exec("DELETE FROM sync_queue WHERE id = ?", id)
 	return err
 }
 

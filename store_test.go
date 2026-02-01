@@ -445,7 +445,8 @@ func TestStore_ApplyFeedback_NotRelevantNoValidationChange(t *testing.T) {
 }
 
 // TestStore_ApplyFeedback_CreatesSyncQueueEntry tests AC #3:
-// Any feedback operation creates a sync queue entry with FEEDBACK operation.
+// Any feedback operation creates a sync queue entry with FEEDBACK operation
+// (only when lore has been synced to central).
 func TestStore_ApplyFeedback_CreatesSyncQueueEntry(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
@@ -464,6 +465,13 @@ func TestStore_ApplyFeedback_CreatesSyncQueueEntry(t *testing.T) {
 	}
 	if err := store.InsertLore(lore); err != nil {
 		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Mark lore as synced (required for feedback queueing)
+	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", lore.ID)
+	if err != nil {
+		t.Fatalf("failed to set synced_at: %v", err)
 	}
 
 	// Clear sync queue from InsertLore
@@ -695,6 +703,13 @@ func TestStore_ApplyFeedback_RollbackOnQueueFailure(t *testing.T) {
 	}
 	if err := store.InsertLore(lore); err != nil {
 		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Mark lore as synced (required for feedback queueing)
+	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", lore.ID)
+	if err != nil {
+		t.Fatalf("failed to set synced_at: %v", err)
 	}
 
 	// Record initial state
@@ -1579,6 +1594,13 @@ func TestStore_ApplyFeedback_QueuesWithOutcomePayload(t *testing.T) {
 		t.Fatalf("InsertLore failed: %v", err)
 	}
 
+	// Mark lore as synced (required for feedback queueing)
+	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", lore.ID)
+	if err != nil {
+		t.Fatalf("failed to set synced_at: %v", err)
+	}
+
 	// Clear the INSERT queue entry from InsertLore
 	store.db.Exec("DELETE FROM sync_queue")
 
@@ -1630,6 +1652,13 @@ func TestStore_ApplyFeedback_QueuesIncorrectOutcome(t *testing.T) {
 		t.Fatalf("InsertLore failed: %v", err)
 	}
 
+	// Mark lore as synced (required for feedback queueing)
+	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", lore.ID)
+	if err != nil {
+		t.Fatalf("failed to set synced_at: %v", err)
+	}
+
 	// Clear the INSERT queue entry
 	store.db.Exec("DELETE FROM sync_queue")
 
@@ -1672,6 +1701,13 @@ func TestStore_ApplyFeedback_QueuesNotRelevantOutcome(t *testing.T) {
 	}
 	if err := store.InsertLore(lore); err != nil {
 		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Mark lore as synced (required for feedback queueing)
+	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", lore.ID)
+	if err != nil {
+		t.Fatalf("failed to set synced_at: %v", err)
 	}
 
 	// Clear the INSERT queue entry
@@ -1947,6 +1983,13 @@ func TestStore_HasPendingSync_WithFeedbackEntries(t *testing.T) {
 		t.Fatalf("InsertLore failed: %v", err)
 	}
 
+	// Mark lore as synced (required for feedback queueing)
+	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", lore.ID)
+	if err != nil {
+		t.Fatalf("failed to set synced_at: %v", err)
+	}
+
 	// Clear the INSERT queue entry
 	store.db.Exec("DELETE FROM sync_queue")
 
@@ -2118,5 +2161,192 @@ func TestStore_ClearAllLore_StoreClosed(t *testing.T) {
 	err = store.ClearAllLore()
 	if err != ErrStoreClosed {
 		t.Errorf("ClearAllLore on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+// ============================================================================
+// Bug Fix: Feedback Sync Fails for Locally-Created Lore
+// Story: Prevent HTTP 404 errors when syncing feedback for unsynced lore
+// ============================================================================
+
+// TestApplyFeedback_UnsyncedLore verifies that feedback on lore with synced_at IS NULL
+// does NOT queue a FEEDBACK operation for central sync (to prevent 404 errors).
+// The local confidence update should still succeed.
+func TestApplyFeedback_UnsyncedLore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore (creates INSERT queue entry, synced_at is NULL)
+	lore := &Lore{
+		ID:         "01TESTID0000000000000001",
+		Content:    "Locally created lore",
+		Category:   CategoryArchitecturalDecision,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Verify lore has no synced_at (is unsynced)
+	freshLore, err := store.Get(lore.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if freshLore.SyncedAt != nil {
+		t.Fatal("Expected lore.SyncedAt to be nil for unsynced lore")
+	}
+
+	// Clear the INSERT queue entry from InsertLore to isolate the test
+	store.db.Exec("DELETE FROM sync_queue")
+
+	// Apply feedback to unsynced lore
+	updated, err := store.ApplyFeedback(lore.ID, 0.08, true)
+	if err != nil {
+		t.Fatalf("ApplyFeedback failed: %v", err)
+	}
+
+	// Local update should succeed - confidence should be updated
+	if updated.Confidence != 0.58 {
+		t.Errorf("Confidence = %f, want 0.58 (local update should succeed)", updated.Confidence)
+	}
+
+	// But NO FEEDBACK entry should be queued for sync
+	var feedbackCount int
+	err = store.db.QueryRow(
+		"SELECT COUNT(*) FROM sync_queue WHERE lore_id = ? AND operation = 'FEEDBACK'",
+		lore.ID,
+	).Scan(&feedbackCount)
+	if err != nil {
+		t.Fatalf("failed to query sync_queue: %v", err)
+	}
+	if feedbackCount != 0 {
+		t.Errorf("FEEDBACK queue count = %d, want 0 (should not queue feedback for unsynced lore)", feedbackCount)
+	}
+}
+
+// TestApplyFeedback_SyncedLore verifies that feedback on lore with synced_at IS NOT NULL
+// DOES queue a FEEDBACK operation for central sync.
+func TestApplyFeedback_SyncedLore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert lore
+	lore := &Lore{
+		ID:         "01TESTID0000000000000002",
+		Content:    "Synced lore from central",
+		Category:   CategoryArchitecturalDecision,
+		Confidence: 0.5,
+		SourceID:   "test-source",
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Simulate that this lore has been synced by setting synced_at
+	_, err = store.db.Exec(
+		"UPDATE lore_entries SET synced_at = ? WHERE id = ?",
+		"2024-01-15T10:00:00Z", lore.ID,
+	)
+	if err != nil {
+		t.Fatalf("failed to set synced_at: %v", err)
+	}
+
+	// Clear the INSERT queue entry to isolate the test
+	store.db.Exec("DELETE FROM sync_queue")
+
+	// Apply feedback to synced lore
+	updated, err := store.ApplyFeedback(lore.ID, 0.08, true)
+	if err != nil {
+		t.Fatalf("ApplyFeedback failed: %v", err)
+	}
+
+	// Local update should succeed
+	if updated.Confidence != 0.58 {
+		t.Errorf("Confidence = %f, want 0.58", updated.Confidence)
+	}
+
+	// FEEDBACK entry SHOULD be queued for sync
+	var feedbackCount int
+	err = store.db.QueryRow(
+		"SELECT COUNT(*) FROM sync_queue WHERE lore_id = ? AND operation = 'FEEDBACK'",
+		lore.ID,
+	).Scan(&feedbackCount)
+	if err != nil {
+		t.Fatalf("failed to query sync_queue: %v", err)
+	}
+	if feedbackCount != 1 {
+		t.Errorf("FEEDBACK queue count = %d, want 1 (should queue feedback for synced lore)", feedbackCount)
+	}
+}
+
+// TestDeleteSyncEntry verifies that single queue entry deletion works correctly.
+func TestDeleteSyncEntry(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Insert multiple sync queue entries
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES
+		('lore-1', 'FEEDBACK', '2024-01-01T00:00:00Z'),
+		('lore-2', 'FEEDBACK', '2024-01-02T00:00:00Z'),
+		('lore-3', 'INSERT', '2024-01-03T00:00:00Z')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	// Get the ID of the first entry
+	var entryID int64
+	err = store.db.QueryRow("SELECT id FROM sync_queue WHERE lore_id = 'lore-1'").Scan(&entryID)
+	if err != nil {
+		t.Fatalf("failed to get entry ID: %v", err)
+	}
+
+	// Delete single entry
+	err = store.DeleteSyncEntry(entryID)
+	if err != nil {
+		t.Fatalf("DeleteSyncEntry failed: %v", err)
+	}
+
+	// Verify the entry is deleted
+	var count int
+	store.db.QueryRow("SELECT COUNT(*) FROM sync_queue WHERE id = ?", entryID).Scan(&count)
+	if count != 0 {
+		t.Errorf("deleted entry still exists, count = %d", count)
+	}
+
+	// Verify other entries are not affected
+	var totalCount int
+	store.db.QueryRow("SELECT COUNT(*) FROM sync_queue").Scan(&totalCount)
+	if totalCount != 2 {
+		t.Errorf("total count = %d, want 2 (other entries should remain)", totalCount)
+	}
+}
+
+// TestDeleteSyncEntry_StoreClosed verifies error when store is closed.
+func TestDeleteSyncEntry_StoreClosed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	store.Close()
+
+	err = store.DeleteSyncEntry(1)
+	if err != ErrStoreClosed {
+		t.Errorf("DeleteSyncEntry on closed store = %v, want ErrStoreClosed", err)
 	}
 }
