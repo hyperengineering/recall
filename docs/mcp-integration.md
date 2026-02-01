@@ -267,6 +267,10 @@ Category Distribution:
 
 ## Configuration Options
 
+You can configure Recall MCP either by editing the JSON config file or using the CLI one-liner.
+
+**Important:** When using `claude mcp add`, environment variables (`-e` flags) must come **before** the `--` separator. The command after `--` is what gets executed.
+
 ### Basic (Offline Only)
 
 Works without any external service, using the default store:
@@ -283,6 +287,12 @@ Works without any external service, using the default store:
     }
   }
 }
+```
+
+**CLI one-liner:**
+
+```bash
+claude mcp add recall -e RECALL_SOURCE_ID=claude-code -- recall mcp
 ```
 
 ### Project-Specific Store
@@ -304,6 +314,12 @@ Target a specific knowledge base for your project:
 }
 ```
 
+**CLI one-liner:**
+
+```bash
+claude mcp add recall -e ENGRAM_STORE=my-project -e RECALL_SOURCE_ID=claude-code -- recall mcp
+```
+
 ### With Engram (Team Sync)
 
 Share lore across environments:
@@ -323,6 +339,17 @@ Share lore across environments:
     }
   }
 }
+```
+
+**CLI one-liner:**
+
+```bash
+claude mcp add recall \
+  -e ENGRAM_STORE=team/project \
+  -e RECALL_SOURCE_ID=claude-code-macbook \
+  -e ENGRAM_URL=https://engram.example.com \
+  -e ENGRAM_API_KEY=your-api-key \
+  -- recall mcp
 ```
 
 ### Docker

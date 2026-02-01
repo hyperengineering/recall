@@ -147,6 +147,25 @@ Add to `~/.claude/claude_desktop_config.json`:
 }
 ```
 
+**Or use the CLI one-liner:**
+
+```bash
+claude mcp add recall -e ENGRAM_STORE=default -e RECALL_SOURCE_ID=claude-code -- recall mcp
+```
+
+With Engram sync enabled:
+
+```bash
+claude mcp add recall \
+  -e ENGRAM_STORE=my-project \
+  -e ENGRAM_URL=https://engram.example.com \
+  -e ENGRAM_API_KEY=your-api-key \
+  -e RECALL_SOURCE_ID=claude-code \
+  -- recall mcp
+```
+
+Restart Claude Code after adding the MCP server.
+
 This gives Claude Code six tools:
 - `recall_query` — Search for relevant lore before starting work
 - `recall_record` — Capture insights during implementation
