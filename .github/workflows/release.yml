@@ -64,12 +64,79 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+
+          # Validate semver format
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Invalid version format: $VERSION"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Determine npm dist-tag
+        id: dist-tag
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ "$VERSION" == *"-alpha"* ]]; then
+            echo "tag=alpha" >> $GITHUB_OUTPUT
+          elif [[ "$VERSION" == *"-beta"* ]]; then
+            echo "tag=beta" >> $GITHUB_OUTPUT
+          elif [[ "$VERSION" == *"-rc"* ]]; then
+            echo "tag=next" >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          fi
+          echo "Using dist-tag: $(grep tag $GITHUB_OUTPUT | cut -d= -f2)"
+
+      - name: Check if version already published
+        id: check-published
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if npm view "@hyperengineering/recall@${VERSION}" version 2>/dev/null; then
+            echo "Version ${VERSION} already published, skipping"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify release artifacts exist
+        if: steps.check-published.outputs.skip != 'true'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          RELEASE_URL="https://github.com/hyperengineering/recall/releases/download/v${VERSION}"
+
+          HTTP_CODE=$(curl -sL -o /dev/null -w "%{http_code}" "${RELEASE_URL}/recall_${VERSION}_linux_amd64.tar.gz")
+
+          if [[ "$HTTP_CODE" != "200" && "$HTTP_CODE" != "302" ]]; then
+            echo "::error::Release artifacts not found for v${VERSION}. HTTP status: ${HTTP_CODE}"
+            exit 1
+          fi
+
+          echo "Release artifacts verified for v${VERSION}"
 
       - name: Update package.json version
+        if: steps.check-published.outputs.skip != 'true'
         working-directory: npm
         run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version --allow-same-version
 
       - name: Publish to npm with provenance
+        if: steps.check-published.outputs.skip != 'true'
         working-directory: npm
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag ${{ steps.dist-tag.outputs.tag }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## npm Publish Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.check-published.outputs.skip }}" == "true" ]]; then
+            echo "**Status:** Skipped (version already published)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Status:** Published" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Dist-tag:** ${{ steps.dist-tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
