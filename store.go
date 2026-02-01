@@ -56,6 +56,7 @@ func NewStore(path string) (*Store, error) {
 }
 
 func (s *Store) migrate() error {
+	goose.SetLogger(goose.NopLogger())
 	goose.SetBaseFS(migrations.FS)
 	if err := goose.SetDialect("sqlite3"); err != nil {
 		return fmt.Errorf("store: set goose dialect: %w", err)
