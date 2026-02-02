@@ -125,8 +125,6 @@ jobs:
         if: steps.check-published.outputs.skip != 'true'
         working-directory: npm
         run: npm publish --access public --provenance --tag ${{ steps.dist-tag.outputs.tag }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Summary
         if: always()
