@@ -42,12 +42,12 @@ type Schema map[string]ParameterDef
 
 // ParameterDef defines a single parameter.
 type ParameterDef struct {
-	Type        string      `json:"type"`
-	Description string      `json:"description,omitempty"`
-	Required    bool        `json:"required,omitempty"`
-	Default     interface{} `json:"default,omitempty"`
-	Items       string      `json:"items,omitempty"`
-	Enum        []string    `json:"enum,omitempty"`
+	Type        string            `json:"type"`
+	Description string            `json:"description,omitempty"`
+	Required    bool              `json:"required,omitempty"`
+	Default     interface{}       `json:"default,omitempty"`
+	Items       map[string]string `json:"items,omitempty"`
+	Enum        []string          `json:"enum,omitempty"`
 }
 
 // Handler is a function that handles tool invocations.
@@ -86,7 +86,7 @@ func RegisterTools(registry Registry, client *recall.Client) {
 			"categories": {
 				Type:        "array",
 				Description: "Filter by specific categories",
-				Items:       "string",
+				Items:       map[string]string{"type": "string"},
 			},
 		},
 		Handler: makeQueryHandler(client),
@@ -136,17 +136,17 @@ func RegisterTools(registry Registry, client *recall.Client) {
 			"helpful": {
 				Type:        "array",
 				Description: "Session refs (L1, L2) or content snippets of helpful lore",
-				Items:       "string",
+				Items:       map[string]string{"type": "string"},
 			},
 			"not_relevant": {
 				Type:        "array",
 				Description: "Session refs of lore that wasn't relevant to this context",
-				Items:       "string",
+				Items:       map[string]string{"type": "string"},
 			},
 			"incorrect": {
 				Type:        "array",
 				Description: "Session refs of lore that was wrong or misleading",
-				Items:       "string",
+				Items:       map[string]string{"type": "string"},
 			},
 		},
 		Handler: makeFeedbackHandler(client),
