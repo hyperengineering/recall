@@ -63,6 +63,11 @@ jobs:
           # Note: Not setting registry-url to avoid token-based auth setup
           # npm Trusted Publishing handles auth via OIDC automatically
 
+      - name: Upgrade npm for Trusted Publishing support
+        run: |
+          npm install -g npm@latest
+          echo "npm version: $(npm --version)"
+
       - name: Extract version from tag
         id: version
         run: |
