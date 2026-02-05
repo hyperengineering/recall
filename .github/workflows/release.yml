@@ -121,6 +121,16 @@ jobs:
         working-directory: npm
         run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version --allow-same-version
 
+      - name: Configure npm for Trusted Publishing
+        if: steps.check-published.outputs.skip != 'true'
+        run: |
+          # Remove the _authToken line that setup-node creates, so npm uses OIDC
+          if [ -f ~/.npmrc ]; then
+            sed -i '/_authToken/d' ~/.npmrc
+          fi
+          echo "npm version: $(npm --version)"
+          echo "Registry: $(npm config get registry)"
+
       - name: Publish to npm with provenance
         if: steps.check-published.outputs.skip != 'true'
         working-directory: npm
