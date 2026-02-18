@@ -188,8 +188,8 @@ func TestNewStore_CreatesDirectory(t *testing.T) {
 // =============================================================================
 
 // TestInsertLore_Atomicity_BothEntriesExist tests AC #7:
-// A valid record atomically inserts both a lore entry and a sync queue entry
-// (INSERT operation) in one transaction.
+// A valid record atomically inserts both a lore entry and a change_log entry
+// (upsert operation) in one transaction.
 func TestInsertLore_Atomicity_BothEntriesExist(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
@@ -221,27 +221,27 @@ func TestInsertLore_Atomicity_BothEntriesExist(t *testing.T) {
 		t.Errorf("lore count = %d, want 1", loreCount)
 	}
 
-	// Verify sync_queue entry exists with operation=INSERT
-	var syncCount int
+	// Verify change_log entry exists with operation=upsert
+	var clCount int
 	var operation string
 	err = store.db.QueryRow(
-		"SELECT COUNT(*), operation FROM sync_queue WHERE lore_id = ?",
+		"SELECT COUNT(*), operation FROM change_log WHERE entity_id = ?",
 		lore.ID,
-	).Scan(&syncCount, &operation)
+	).Scan(&clCount, &operation)
 	if err != nil {
-		t.Fatalf("failed to query sync_queue: %v", err)
+		t.Fatalf("failed to query change_log: %v", err)
 	}
-	if syncCount != 1 {
-		t.Errorf("sync_queue count = %d, want 1", syncCount)
+	if clCount != 1 {
+		t.Errorf("change_log count = %d, want 1", clCount)
 	}
-	if operation != "INSERT" {
-		t.Errorf("sync_queue operation = %q, want %q", operation, "INSERT")
+	if operation != "upsert" {
+		t.Errorf("change_log operation = %q, want %q", operation, "upsert")
 	}
 }
 
 // TestInsertLore_Atomicity_RollbackOnDuplicate tests AC #8:
 // A database write failure mid-transaction rolls back both the lore entry
-// and sync queue entry. We trigger this by inserting a duplicate ID.
+// and change_log entry. We trigger this by inserting a duplicate ID.
 func TestInsertLore_Atomicity_RollbackOnDuplicate(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
@@ -444,10 +444,10 @@ func TestStore_ApplyFeedback_NotRelevantNoValidationChange(t *testing.T) {
 	}
 }
 
-// TestStore_ApplyFeedback_CreatesSyncQueueEntry tests AC #3:
-// Any feedback operation creates a sync queue entry with FEEDBACK operation
-// (only when lore has been synced to central).
-func TestStore_ApplyFeedback_CreatesSyncQueueEntry(t *testing.T) {
+// TestStore_ApplyFeedback_CreatesChangeLogEntry tests AC #3:
+// Any feedback operation creates a change_log entry with full entity state
+// (upsert operation).
+func TestStore_ApplyFeedback_CreatesChangeLogEntry(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
 	if err != nil {
@@ -467,15 +467,8 @@ func TestStore_ApplyFeedback_CreatesSyncQueueEntry(t *testing.T) {
 		t.Fatalf("InsertLore failed: %v", err)
 	}
 
-	// Mark lore as synced (required for feedback queueing)
-	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
-		"2024-01-15T10:00:00Z", lore.ID)
-	if err != nil {
-		t.Fatalf("failed to set synced_at: %v", err)
-	}
-
-	// Clear sync queue from InsertLore
-	store.db.Exec("DELETE FROM sync_queue")
+	// Clear change_log from InsertLore
+	store.db.Exec("DELETE FROM change_log")
 
 	// Apply feedback
 	_, err = store.ApplyFeedback(lore.ID, 0.08, true)
@@ -483,21 +476,21 @@ func TestStore_ApplyFeedback_CreatesSyncQueueEntry(t *testing.T) {
 		t.Fatalf("ApplyFeedback failed: %v", err)
 	}
 
-	// Verify sync_queue entry exists with FEEDBACK operation
+	// Verify change_log entry exists with upsert operation
 	var count int
 	var operation string
 	err = store.db.QueryRow(
-		"SELECT COUNT(*), operation FROM sync_queue WHERE lore_id = ?",
+		"SELECT COUNT(*), operation FROM change_log WHERE entity_id = ?",
 		lore.ID,
 	).Scan(&count, &operation)
 	if err != nil {
-		t.Fatalf("failed to query sync_queue: %v", err)
+		t.Fatalf("failed to query change_log: %v", err)
 	}
 	if count != 1 {
-		t.Errorf("sync_queue count = %d, want 1", count)
+		t.Errorf("change_log count = %d, want 1", count)
 	}
-	if operation != "FEEDBACK" {
-		t.Errorf("sync_queue operation = %q, want %q", operation, "FEEDBACK")
+	if operation != "upsert" {
+		t.Errorf("change_log operation = %q, want %q", operation, "upsert")
 	}
 }
 
@@ -595,7 +588,7 @@ func TestStore_ApplyFeedback_ConfidenceClamping(t *testing.T) {
 
 // TestStore_ApplyFeedback_RollbackOnUpdateFailure tests AC #4:
 // Database failure mid-feedback-transaction rolls back both confidence update
-// and sync queue entry. This test verifies rollback by attempting feedback on
+// and change_log entry. This test verifies rollback by attempting feedback on
 // a non-existent lore (which fails at the getLore check before transaction),
 // and verifies the atomic nature by checking that when the UPDATE would fail
 // mid-transaction, no partial state is left behind.
@@ -672,19 +665,18 @@ func TestStore_ApplyFeedback_RollbackOnUpdateFailure(t *testing.T) {
 	}
 }
 
-// TestStore_ApplyFeedback_RollbackOnQueueFailure tests AC #4:
+// TestStore_ApplyFeedback_RollbackOnChangeLogFailure tests AC #4:
 // Database failure mid-feedback-transaction rolls back both confidence update
-// and sync queue entry. This test verifies atomicity by using a constraint
-// violation: we insert a sync_queue entry with a trigger that will cause
-// the INSERT to fail, and verify the lore UPDATE was rolled back.
+// and change_log entry. This test verifies atomicity by using a constraint
+// violation that causes the change_log INSERT to fail, and verifies the lore
+// UPDATE was rolled back.
 //
-// Since we cannot easily inject failures into the sync_queue INSERT without
-// modifying the schema, this test demonstrates atomicity by:
+// This test demonstrates atomicity by:
 // 1. Recording state before a successful feedback
 // 2. Applying feedback successfully
-// 3. Verifying both lore AND sync_queue were updated together (atomicity)
-// 4. Then testing rollback by dropping the sync_queue table mid-operation
-func TestStore_ApplyFeedback_RollbackOnQueueFailure(t *testing.T) {
+// 3. Verifying both lore AND change_log were updated together (atomicity)
+// 4. Then testing rollback by dropping the change_log table mid-operation
+func TestStore_ApplyFeedback_RollbackOnChangeLogFailure(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
 	if err != nil {
@@ -705,20 +697,11 @@ func TestStore_ApplyFeedback_RollbackOnQueueFailure(t *testing.T) {
 		t.Fatalf("InsertLore failed: %v", err)
 	}
 
-	// Mark lore as synced (required for feedback queueing)
-	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
-		"2024-01-15T10:00:00Z", lore.ID)
-	if err != nil {
-		t.Fatalf("failed to set synced_at: %v", err)
-	}
-
 	// Record initial state
 	initialConfidence := lore.Confidence
-	var initialSyncCount int
-	store.db.QueryRow("SELECT COUNT(*) FROM sync_queue").Scan(&initialSyncCount)
 
-	// Clear sync_queue and apply successful feedback to verify atomicity
-	store.db.Exec("DELETE FROM sync_queue")
+	// Clear change_log and apply successful feedback to verify atomicity
+	store.db.Exec("DELETE FROM change_log")
 
 	updated, err := store.ApplyFeedback(lore.ID, 0.08, true)
 	if err != nil {
@@ -730,34 +713,34 @@ func TestStore_ApplyFeedback_RollbackOnQueueFailure(t *testing.T) {
 		t.Errorf("Confidence = %f, want %f", updated.Confidence, initialConfidence+0.08)
 	}
 
-	var syncCount int
-	store.db.QueryRow("SELECT COUNT(*) FROM sync_queue WHERE lore_id = ?", lore.ID).Scan(&syncCount)
-	if syncCount != 1 {
-		t.Errorf("sync_queue count = %d, want 1 (atomicity check)", syncCount)
+	var clCount int
+	store.db.QueryRow("SELECT COUNT(*) FROM change_log WHERE entity_id = ?", lore.ID).Scan(&clCount)
+	if clCount != 1 {
+		t.Errorf("change_log count = %d, want 1 (atomicity check)", clCount)
 	}
 
-	// Now test rollback scenario by renaming sync_queue to break INSERT
+	// Now test rollback scenario by renaming change_log to break INSERT
 	// First, record current state
 	currentLore, _ := store.Get(lore.ID)
 	currentConfidence := currentLore.Confidence
 	currentValidationCount := currentLore.ValidationCount
 
-	// Rename sync_queue table to simulate a failure on sync_queue INSERT
-	_, err = store.db.Exec("ALTER TABLE sync_queue RENAME TO sync_queue_backup")
+	// Rename change_log table to simulate a failure on change_log INSERT
+	_, err = store.db.Exec("ALTER TABLE change_log RENAME TO change_log_backup")
 	if err != nil {
-		t.Fatalf("failed to rename sync_queue: %v", err)
+		t.Fatalf("failed to rename change_log: %v", err)
 	}
 
-	// Attempt feedback - this should fail on sync_queue INSERT
+	// Attempt feedback - this should fail on change_log INSERT
 	_, err = store.ApplyFeedback(lore.ID, 0.08, true)
 	if err == nil {
-		t.Fatal("expected ApplyFeedback to fail when sync_queue table is missing")
+		t.Fatal("expected ApplyFeedback to fail when change_log table is missing")
 	}
 
-	// Restore sync_queue table
-	_, err = store.db.Exec("ALTER TABLE sync_queue_backup RENAME TO sync_queue")
+	// Restore change_log table
+	_, err = store.db.Exec("ALTER TABLE change_log_backup RENAME TO change_log")
 	if err != nil {
-		t.Fatalf("failed to restore sync_queue: %v", err)
+		t.Fatalf("failed to restore change_log: %v", err)
 	}
 
 	// Verify lore was NOT updated (rollback worked)
@@ -1574,7 +1557,7 @@ func TestStore_GetLoreByIDs_StoreClosed(t *testing.T) {
 // ApplyFeedback outcome payload test
 // ============================================================================
 
-func TestStore_ApplyFeedback_QueuesWithOutcomePayload(t *testing.T) {
+func TestStore_ApplyFeedback_ChangeLogHelpfulPayload(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
 	if err != nil {
@@ -1594,15 +1577,8 @@ func TestStore_ApplyFeedback_QueuesWithOutcomePayload(t *testing.T) {
 		t.Fatalf("InsertLore failed: %v", err)
 	}
 
-	// Mark lore as synced (required for feedback queueing)
-	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
-		"2024-01-15T10:00:00Z", lore.ID)
-	if err != nil {
-		t.Fatalf("failed to set synced_at: %v", err)
-	}
-
-	// Clear the INSERT queue entry from InsertLore
-	store.db.Exec("DELETE FROM sync_queue")
+	// Clear the change_log entry from InsertLore
+	store.db.Exec("DELETE FROM change_log")
 
 	// Apply helpful feedback (isHelpful=true)
 	_, err = store.ApplyFeedback(lore.ID, 0.08, true)
@@ -1610,29 +1586,31 @@ func TestStore_ApplyFeedback_QueuesWithOutcomePayload(t *testing.T) {
 		t.Fatalf("ApplyFeedback failed: %v", err)
 	}
 
-	// Verify queue entry has outcome payload
+	// Verify change_log entry has full entity payload
 	var payload string
-	err = store.db.QueryRow("SELECT payload FROM sync_queue WHERE lore_id = ? AND operation = 'FEEDBACK'", lore.ID).Scan(&payload)
+	err = store.db.QueryRow("SELECT payload FROM change_log WHERE entity_id = ? AND operation = 'upsert'", lore.ID).Scan(&payload)
 	if err != nil {
-		t.Fatalf("failed to get queue entry: %v", err)
+		t.Fatalf("failed to get change_log entry: %v", err)
 	}
 
 	if payload == "" {
 		t.Fatal("expected payload to be set, got empty string")
 	}
 
-	// Parse payload
-	var feedbackPayload FeedbackQueuePayload
-	if err := json.Unmarshal([]byte(payload), &feedbackPayload); err != nil {
+	// Parse payload and verify updated confidence
+	var entityPayload struct {
+		Confidence float64 `json:"confidence"`
+	}
+	if err := json.Unmarshal([]byte(payload), &entityPayload); err != nil {
 		t.Fatalf("failed to unmarshal payload: %v", err)
 	}
 
-	if feedbackPayload.Outcome != "helpful" {
-		t.Errorf("Outcome = %q, want %q", feedbackPayload.Outcome, "helpful")
+	if entityPayload.Confidence != 0.58 {
+		t.Errorf("payload confidence = %f, want 0.58", entityPayload.Confidence)
 	}
 }
 
-func TestStore_ApplyFeedback_QueuesIncorrectOutcome(t *testing.T) {
+func TestStore_ApplyFeedback_ChangeLogIncorrectPayload(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
 	if err != nil {
@@ -1652,15 +1630,8 @@ func TestStore_ApplyFeedback_QueuesIncorrectOutcome(t *testing.T) {
 		t.Fatalf("InsertLore failed: %v", err)
 	}
 
-	// Mark lore as synced (required for feedback queueing)
-	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
-		"2024-01-15T10:00:00Z", lore.ID)
-	if err != nil {
-		t.Fatalf("failed to set synced_at: %v", err)
-	}
-
-	// Clear the INSERT queue entry
-	store.db.Exec("DELETE FROM sync_queue")
+	// Clear the change_log entry
+	store.db.Exec("DELETE FROM change_log")
 
 	// Apply incorrect feedback (delta < 0, isHelpful=false)
 	_, err = store.ApplyFeedback(lore.ID, -0.15, false)
@@ -1668,22 +1639,24 @@ func TestStore_ApplyFeedback_QueuesIncorrectOutcome(t *testing.T) {
 		t.Fatalf("ApplyFeedback failed: %v", err)
 	}
 
-	// Verify queue entry has incorrect outcome
+	// Verify change_log entry has full entity payload with decreased confidence
 	var payload string
-	err = store.db.QueryRow("SELECT payload FROM sync_queue WHERE lore_id = ? AND operation = 'FEEDBACK'", lore.ID).Scan(&payload)
+	err = store.db.QueryRow("SELECT payload FROM change_log WHERE entity_id = ? AND operation = 'upsert'", lore.ID).Scan(&payload)
 	if err != nil {
-		t.Fatalf("failed to get queue entry: %v", err)
+		t.Fatalf("failed to get change_log entry: %v", err)
 	}
 
-	var feedbackPayload FeedbackQueuePayload
-	json.Unmarshal([]byte(payload), &feedbackPayload)
+	var entityPayload struct {
+		Confidence float64 `json:"confidence"`
+	}
+	json.Unmarshal([]byte(payload), &entityPayload)
 
-	if feedbackPayload.Outcome != "incorrect" {
-		t.Errorf("Outcome = %q, want %q", feedbackPayload.Outcome, "incorrect")
+	if entityPayload.Confidence != 0.35 {
+		t.Errorf("payload confidence = %f, want 0.35", entityPayload.Confidence)
 	}
 }
 
-func TestStore_ApplyFeedback_QueuesNotRelevantOutcome(t *testing.T) {
+func TestStore_ApplyFeedback_ChangeLogNotRelevantPayload(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
 	if err != nil {
@@ -1703,15 +1676,8 @@ func TestStore_ApplyFeedback_QueuesNotRelevantOutcome(t *testing.T) {
 		t.Fatalf("InsertLore failed: %v", err)
 	}
 
-	// Mark lore as synced (required for feedback queueing)
-	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
-		"2024-01-15T10:00:00Z", lore.ID)
-	if err != nil {
-		t.Fatalf("failed to set synced_at: %v", err)
-	}
-
-	// Clear the INSERT queue entry
-	store.db.Exec("DELETE FROM sync_queue")
+	// Clear the change_log entry
+	store.db.Exec("DELETE FROM change_log")
 
 	// Apply not_relevant feedback (delta = 0, isHelpful=false)
 	_, err = store.ApplyFeedback(lore.ID, 0.0, false)
@@ -1719,18 +1685,20 @@ func TestStore_ApplyFeedback_QueuesNotRelevantOutcome(t *testing.T) {
 		t.Fatalf("ApplyFeedback failed: %v", err)
 	}
 
-	// Verify queue entry has not_relevant outcome
+	// Verify change_log entry has full entity payload with unchanged confidence
 	var payload string
-	err = store.db.QueryRow("SELECT payload FROM sync_queue WHERE lore_id = ? AND operation = 'FEEDBACK'", lore.ID).Scan(&payload)
+	err = store.db.QueryRow("SELECT payload FROM change_log WHERE entity_id = ? AND operation = 'upsert'", lore.ID).Scan(&payload)
 	if err != nil {
-		t.Fatalf("failed to get queue entry: %v", err)
+		t.Fatalf("failed to get change_log entry: %v", err)
 	}
 
-	var feedbackPayload FeedbackQueuePayload
-	json.Unmarshal([]byte(payload), &feedbackPayload)
+	var entityPayload struct {
+		Confidence float64 `json:"confidence"`
+	}
+	json.Unmarshal([]byte(payload), &entityPayload)
 
-	if feedbackPayload.Outcome != "not_relevant" {
-		t.Errorf("Outcome = %q, want %q", feedbackPayload.Outcome, "not_relevant")
+	if entityPayload.Confidence != 0.5 {
+		t.Errorf("payload confidence = %f, want 0.5", entityPayload.Confidence)
 	}
 }
 
@@ -1938,18 +1906,15 @@ func TestStore_HasPendingSync_WithInsertEntries(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Insert 3 lore entries (each creates an INSERT in sync_queue)
-	for i := 0; i < 3; i++ {
-		lore := &Lore{
-			ID:         fmt.Sprintf("01HQTEST0000000000000%03d", i+1),
-			Content:    fmt.Sprintf("Content %d", i+1),
-			Category:   CategoryPatternOutcome,
-			Confidence: 0.5,
-			SourceID:   "test-source",
-		}
-		if err := store.InsertLore(lore); err != nil {
-			t.Fatalf("InsertLore failed: %v", err)
-		}
+	// Manually insert sync_queue entries (InsertLore now writes to change_log)
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES
+		('lore-1', 'INSERT', '2024-01-01T00:00:00Z'),
+		('lore-2', 'INSERT', '2024-01-02T00:00:00Z'),
+		('lore-3', 'INSERT', '2024-01-03T00:00:00Z')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
 	}
 
 	count, err := store.HasPendingSync()
@@ -1971,31 +1936,15 @@ func TestStore_HasPendingSync_WithFeedbackEntries(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Insert a lore entry
-	lore := &Lore{
-		ID:         "01HQTEST00000000000001",
-		Content:    "Test content",
-		Category:   CategoryPatternOutcome,
-		Confidence: 0.5,
-		SourceID:   "test-source",
-	}
-	if err := store.InsertLore(lore); err != nil {
-		t.Fatalf("InsertLore failed: %v", err)
-	}
-
-	// Mark lore as synced (required for feedback queueing)
-	_, err = store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
-		"2024-01-15T10:00:00Z", lore.ID)
+	// Manually insert FEEDBACK entries (ApplyFeedback now writes to change_log)
+	_, err = store.db.Exec(`
+		INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES
+		('lore-1', 'FEEDBACK', '2024-01-04T00:00:00Z'),
+		('lore-1', 'FEEDBACK', '2024-01-05T00:00:00Z')
+	`)
 	if err != nil {
-		t.Fatalf("failed to set synced_at: %v", err)
+		t.Fatalf("failed to insert test data: %v", err)
 	}
-
-	// Clear the INSERT queue entry
-	store.db.Exec("DELETE FROM sync_queue")
-
-	// Apply feedback twice (creates 2 FEEDBACK entries)
-	store.ApplyFeedback(lore.ID, 0.08, true)
-	store.ApplyFeedback(lore.ID, 0.08, true)
 
 	count, err := store.HasPendingSync()
 	if err != nil {
@@ -2180,7 +2129,7 @@ func TestApplyFeedback_UnsyncedLore(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Insert lore (creates INSERT queue entry, synced_at is NULL)
+	// Insert lore (synced_at is NULL)
 	lore := &Lore{
 		ID:         "01TESTID0000000000000001",
 		Content:    "Locally created lore",
@@ -2201,8 +2150,8 @@ func TestApplyFeedback_UnsyncedLore(t *testing.T) {
 		t.Fatal("Expected lore.SyncedAt to be nil for unsynced lore")
 	}
 
-	// Clear the INSERT queue entry from InsertLore to isolate the test
-	store.db.Exec("DELETE FROM sync_queue")
+	// Clear change_log from InsertLore to isolate the test
+	store.db.Exec("DELETE FROM change_log")
 
 	// Apply feedback to unsynced lore
 	updated, err := store.ApplyFeedback(lore.ID, 0.08, true)
@@ -2215,22 +2164,22 @@ func TestApplyFeedback_UnsyncedLore(t *testing.T) {
 		t.Errorf("Confidence = %f, want 0.58 (local update should succeed)", updated.Confidence)
 	}
 
-	// But NO FEEDBACK entry should be queued for sync
-	var feedbackCount int
+	// change_log entry should be written for ALL feedback (regardless of synced_at)
+	var clCount int
 	err = store.db.QueryRow(
-		"SELECT COUNT(*) FROM sync_queue WHERE lore_id = ? AND operation = 'FEEDBACK'",
+		"SELECT COUNT(*) FROM change_log WHERE entity_id = ? AND operation = 'upsert'",
 		lore.ID,
-	).Scan(&feedbackCount)
+	).Scan(&clCount)
 	if err != nil {
-		t.Fatalf("failed to query sync_queue: %v", err)
+		t.Fatalf("failed to query change_log: %v", err)
 	}
-	if feedbackCount != 0 {
-		t.Errorf("FEEDBACK queue count = %d, want 0 (should not queue feedback for unsynced lore)", feedbackCount)
+	if clCount != 1 {
+		t.Errorf("change_log count = %d, want 1 (should always write change_log)", clCount)
 	}
 }
 
-// TestApplyFeedback_SyncedLore verifies that feedback on lore with synced_at IS NOT NULL
-// DOES queue a FEEDBACK operation for central sync.
+// TestApplyFeedback_SyncedLore verifies that feedback on synced lore
+// writes a change_log upsert with full entity state.
 func TestApplyFeedback_SyncedLore(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
@@ -2260,8 +2209,8 @@ func TestApplyFeedback_SyncedLore(t *testing.T) {
 		t.Fatalf("failed to set synced_at: %v", err)
 	}
 
-	// Clear the INSERT queue entry to isolate the test
-	store.db.Exec("DELETE FROM sync_queue")
+	// Clear the change_log entry to isolate the test
+	store.db.Exec("DELETE FROM change_log")
 
 	// Apply feedback to synced lore
 	updated, err := store.ApplyFeedback(lore.ID, 0.08, true)
@@ -2274,17 +2223,17 @@ func TestApplyFeedback_SyncedLore(t *testing.T) {
 		t.Errorf("Confidence = %f, want 0.58", updated.Confidence)
 	}
 
-	// FEEDBACK entry SHOULD be queued for sync
-	var feedbackCount int
+	// change_log entry should be written
+	var clCount int
 	err = store.db.QueryRow(
-		"SELECT COUNT(*) FROM sync_queue WHERE lore_id = ? AND operation = 'FEEDBACK'",
+		"SELECT COUNT(*) FROM change_log WHERE entity_id = ? AND operation = 'upsert'",
 		lore.ID,
-	).Scan(&feedbackCount)
+	).Scan(&clCount)
 	if err != nil {
-		t.Fatalf("failed to query sync_queue: %v", err)
+		t.Fatalf("failed to query change_log: %v", err)
 	}
-	if feedbackCount != 1 {
-		t.Errorf("FEEDBACK queue count = %d, want 1 (should queue feedback for synced lore)", feedbackCount)
+	if clCount != 1 {
+		t.Errorf("change_log count = %d, want 1 (should write change_log for synced lore)", clCount)
 	}
 }
 

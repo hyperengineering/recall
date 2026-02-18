@@ -53,7 +53,7 @@ func TestSyncer_Push_LoreSuccess(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Insert lore (creates INSERT queue entry)
+	// Insert lore
 	lore := &Lore{
 		ID:         "01HQTEST00000000000001",
 		Content:    "Test content",
@@ -62,6 +62,10 @@ func TestSyncer_Push_LoreSuccess(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+
+	// Manually add sync_queue entry (InsertLore now writes to change_log)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	// Track received payload
 	var receivedPayload engramIngestRequest
@@ -186,8 +190,10 @@ func TestSyncer_Push_MixedOperations(t *testing.T) {
 	store.db.Exec("UPDATE lore_entries SET synced_at = ? WHERE id = ?",
 		"2024-01-15T10:00:00Z", lore2.ID)
 
-	// Convert one to FEEDBACK
-	store.db.Exec("UPDATE sync_queue SET operation = 'FEEDBACK', payload = '{\"outcome\":\"incorrect\"}' WHERE lore_id = ?", lore2.ID)
+	// Manually add sync_queue entries (InsertLore now writes to change_log)
+	now := time.Now().UTC().Format(time.RFC3339)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)", lore1.ID, now)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, payload, queued_at) VALUES (?, 'FEEDBACK', '{\"outcome\":\"incorrect\"}', ?)", lore2.ID, now)
 
 	loreCalled := false
 	feedbackCalled := false
@@ -239,6 +245,10 @@ func TestSyncer_Push_LoreFailure(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+
+	// Manually add sync_queue entry (InsertLore now writes to change_log)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -294,6 +304,8 @@ func TestSyncer_Push_NetworkError(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	// Use invalid URL to simulate network error
 	syncer := NewSyncer(store, "http://localhost:99999", "test-key", "test-source")
@@ -331,6 +343,8 @@ func TestSyncer_Push_RetryPreviouslyFailed(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	// Simulate previous failure
 	store.db.Exec("UPDATE sync_queue SET attempts = 2, last_error = 'previous error' WHERE lore_id = ?", lore.ID)
@@ -379,6 +393,8 @@ func TestSyncer_Push_SourceIDIncluded(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	var receivedSourceID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -515,6 +531,8 @@ func TestSyncer_Flush_SetsFlushFlag(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	var receivedFlush bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -561,6 +579,8 @@ func TestSyncer_SourceIDHeader_OnPush(t *testing.T) {
 		SourceID:   "src",
 	}
 	_ = store.InsertLore(lore)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	var receivedHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -718,6 +738,8 @@ func TestSyncer_SourceIDHeader_OnFlush(t *testing.T) {
 		SourceID:   "src",
 	}
 	_ = store.InsertLore(lore)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	var receivedHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1435,6 +1457,8 @@ func TestSyncer_Push_WithStoreID(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	var receivedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1477,6 +1501,8 @@ func TestSyncer_Push_WithEncodedStoreID(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	var receivedRawPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1522,6 +1548,8 @@ func TestSyncer_Push_WithoutStoreID(t *testing.T) {
 		SourceID:   "src",
 	}
 	store.InsertLore(lore)
+	store.db.Exec("INSERT INTO sync_queue (lore_id, operation, queued_at) VALUES (?, 'INSERT', ?)",
+		lore.ID, time.Now().UTC().Format(time.RFC3339))
 
 	var receivedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -22,10 +22,11 @@ const schemaVersion = "2"
 
 // Store manages the local SQLite lore database.
 type Store struct {
-	db     *sql.DB
-	mu     sync.RWMutex
-	closed bool
-	path   string
+	db       *sql.DB
+	mu       sync.RWMutex
+	closed   bool
+	path     string
+	sourceID string // cached from sync_meta for change_log writes
 }
 
 // NewStore opens or creates a local lore store.
@@ -51,6 +52,12 @@ func NewStore(path string) (*Store, error) {
 	if err := store.migrate(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
+
+	// Cache source_id for change_log writes
+	if err := store.loadSourceID(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("load source_id: %w", err)
 	}
 
 	return store, nil
@@ -120,7 +127,84 @@ func generateUUIDv4() (string, error) {
 		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
 }
 
-// InsertLore atomically inserts a lore entry and a sync queue entry in one transaction.
+// loadSourceID reads source_id from sync_meta and caches it on the Store.
+func (s *Store) loadSourceID() error {
+	var sourceID string
+	err := s.db.QueryRow("SELECT value FROM sync_meta WHERE key = 'source_id'").Scan(&sourceID)
+	if err != nil {
+		return fmt.Errorf("store: read source_id: %w", err)
+	}
+	s.sourceID = sourceID
+	return nil
+}
+
+// SourceID returns the cached source_id for this store.
+func (s *Store) SourceID() string {
+	return s.sourceID
+}
+
+// appendChangeLog inserts a change_log entry within a transaction.
+func appendChangeLog(tx *sql.Tx, tableName, entityID, operation string, payload []byte, sourceID string) error {
+	createdAt := time.Now().UTC().Format(time.RFC3339)
+	var payloadArg any
+	if payload != nil {
+		payloadArg = string(payload)
+	}
+	_, err := tx.Exec(`
+		INSERT INTO change_log (table_name, entity_id, operation, payload, source_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, tableName, entityID, operation, payloadArg, sourceID, createdAt)
+	if err != nil {
+		return fmt.Errorf("store: append change_log: %w", err)
+	}
+	return nil
+}
+
+// lorePayloadJSON builds the full entity JSON payload for a lore entry.
+// This is the format required by Engram's Recall domain plugin validation.
+func lorePayloadJSON(lore *Lore) ([]byte, error) {
+	payload := struct {
+		ID              string   `json:"id"`
+		Content         string   `json:"content"`
+		Context         string   `json:"context,omitempty"`
+		Category        string   `json:"category"`
+		Confidence      float64  `json:"confidence"`
+		EmbeddingStatus string   `json:"embedding_status"`
+		SourceID        string   `json:"source_id"`
+		Sources         []string `json:"sources"`
+		ValidationCount int      `json:"validation_count"`
+		CreatedAt       string   `json:"created_at"`
+		UpdatedAt       string   `json:"updated_at"`
+		DeletedAt       *string  `json:"deleted_at"`
+		LastValidatedAt *string  `json:"last_validated_at"`
+	}{
+		ID:              lore.ID,
+		Content:         lore.Content,
+		Context:         lore.Context,
+		Category:        string(lore.Category),
+		Confidence:      lore.Confidence,
+		EmbeddingStatus: lore.EmbeddingStatus,
+		SourceID:        lore.SourceID,
+		Sources:         lore.Sources,
+		ValidationCount: lore.ValidationCount,
+		CreatedAt:       lore.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:       lore.UpdatedAt.Format(time.RFC3339),
+	}
+	if lore.DeletedAt != nil {
+		ts := lore.DeletedAt.Format(time.RFC3339)
+		payload.DeletedAt = &ts
+	}
+	if lore.LastValidatedAt != nil {
+		ts := lore.LastValidatedAt.Format(time.RFC3339)
+		payload.LastValidatedAt = &ts
+	}
+	if payload.Sources == nil {
+		payload.Sources = []string{}
+	}
+	return json.Marshal(payload)
+}
+
+// InsertLore atomically inserts a lore entry and a change_log entry in one transaction.
 // This is the primary method for storing new lore (used by Client.Record).
 func (s *Store) InsertLore(lore *Lore) error {
 	s.mu.Lock()
@@ -175,13 +259,15 @@ func (s *Store) InsertLore(lore *Lore) error {
 		return fmt.Errorf("store: insert lore: %w", err)
 	}
 
-	// INSERT sync_queue
-	_, err = tx.Exec(`
-		INSERT INTO sync_queue (lore_id, operation, queued_at)
-		VALUES (?, ?, ?)
-	`, lore.ID, "INSERT", time.Now().UTC().Format(time.RFC3339))
+	// Build full entity payload for change_log
+	payloadJSON, err := lorePayloadJSON(lore)
 	if err != nil {
-		return fmt.Errorf("store: enqueue sync: %w", err)
+		return fmt.Errorf("store: marshal change_log payload: %w", err)
+	}
+
+	// INSERT change_log
+	if err := appendChangeLog(tx, "lore_entries", lore.ID, "upsert", payloadJSON, s.sourceID); err != nil {
+		return err
 	}
 
 	return tx.Commit()
@@ -293,6 +379,17 @@ func (s *Store) getLore(id string) (*Lore, error) {
 	return s.scanLore(row)
 }
 
+// getLoreTx reads a lore entry within a transaction.
+func (s *Store) getLoreTx(tx *sql.Tx, id string) (*Lore, error) {
+	row := tx.QueryRow(`
+		SELECT id, content, context, category, confidence, embedding, embedding_status, source_id, sources,
+		       validation_count, last_validated_at, created_at, updated_at, deleted_at, synced_at
+		FROM lore_entries WHERE id = ? AND deleted_at IS NULL
+	`, id)
+
+	return s.scanLore(row)
+}
+
 // Query retrieves lore matching the given parameters.
 // Note: This performs brute-force similarity search when embeddings are present.
 func (s *Store) Query(params QueryParams) ([]Lore, error) {
@@ -361,7 +458,7 @@ func (s *Store) queryLore(params QueryParams, requireEmbedding bool) ([]Lore, er
 // All operations occur in a single transaction:
 //  1. UPDATE lore SET confidence (clamped to [0.0, 1.0])
 //  2. IF isHelpful: INCREMENT validation_count, SET last_validated
-//  3. INSERT sync_queue entry (FEEDBACK operation)
+//  3. Write change_log entry with full entity state (upsert operation)
 //  4. COMMIT
 //
 // If any step fails, the entire transaction rolls back.
@@ -424,47 +521,27 @@ func (s *Store) ApplyFeedback(loreID string, delta float64, isHelpful bool) (*Lo
 		return nil, fmt.Errorf("store: update confidence: %w", err)
 	}
 
-	// Only queue FEEDBACK for lore that has been synced to central.
-	// If synced_at IS NULL, the lore exists only locally and hasn't been
-	// pushed to Engram yet. Syncing feedback for non-existent lore would
-	// cause HTTP 404 errors on central.
-	if lore.SyncedAt != nil {
-		// Determine outcome for sync based on feedback signal:
-		// - isHelpful=true -> FeedbackHelpful (user explicitly marked as useful)
-		// - delta < 0 -> FeedbackIncorrect (negative feedback, confidence decreased)
-		// - delta = 0 -> FeedbackNotRelevant (neutral/no impact on confidence)
-		var outcome FeedbackType
-		switch {
-		case isHelpful:
-			outcome = FeedbackHelpful
-		case delta < 0:
-			outcome = FeedbackIncorrect
-		default:
-			outcome = FeedbackNotRelevant
-		}
-
-		// Queue with payload
-		payloadJSON, _ := json.Marshal(FeedbackQueuePayload{Outcome: string(outcome)})
-
-		// INSERT sync_queue entry
-		_, err = tx.Exec(`
-			INSERT INTO sync_queue (lore_id, operation, payload, queued_at)
-			VALUES (?, 'FEEDBACK', ?, ?)
-		`, loreID, string(payloadJSON), nowStr)
-		if err != nil {
-			return nil, fmt.Errorf("store: enqueue sync: %w", err)
-		}
+	// Read the full updated entity state within the transaction for change_log
+	updatedLore, err := s.getLoreTx(tx, loreID)
+	if err != nil {
+		return nil, fmt.Errorf("store: read updated lore: %w", err)
 	}
-	// If lore.SyncedAt is nil, skip queueing - local update succeeded,
-	// but feedback will be synced when the lore itself gets synced.
+
+	// Write full-state upsert to change_log
+	payloadJSON, err := lorePayloadJSON(updatedLore)
+	if err != nil {
+		return nil, fmt.Errorf("store: marshal change_log payload: %w", err)
+	}
+	if err := appendChangeLog(tx, "lore_entries", loreID, "upsert", payloadJSON, s.sourceID); err != nil {
+		return nil, err
+	}
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: commit: %w", err)
 	}
 
-	// Return updated lore
-	return s.getLore(loreID)
+	return updatedLore, nil
 }
 
 // ApplyFeedbackBatch updates lore confidence based on batch feedback.
@@ -1415,8 +1492,8 @@ func (s *Store) UpsertLore(lore *Lore) error {
 	return nil
 }
 
-// DeleteLoreByID permanently removes a lore entry by ID.
-// Used by delta sync to remove entries that were deleted on the server.
+// DeleteLoreByID soft-deletes a lore entry and writes a change_log delete entry.
+// Sets deleted_at on the lore entry rather than removing the row.
 // Returns nil if the entry doesn't exist.
 func (s *Store) DeleteLoreByID(id string) error {
 	s.mu.Lock()
@@ -1426,17 +1503,34 @@ func (s *Store) DeleteLoreByID(id string) error {
 		return ErrStoreClosed
 	}
 
-	_, err := s.db.Exec("DELETE FROM lore_entries WHERE id = ?", id)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: delete lore: %w", err)
+		return fmt.Errorf("store: begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Soft delete: set deleted_at instead of removing the row
+	_, err = tx.Exec(`
+		UPDATE lore_entries SET deleted_at = ?, updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+	`, now, now, id)
+	if err != nil {
+		return fmt.Errorf("store: soft delete lore: %w", err)
 	}
 
-	return nil
+	// Write change_log entry with operation=delete, payload=NULL
+	if err := appendChangeLog(tx, "lore_entries", id, "delete", nil, s.sourceID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
-// HasPendingSync returns the count of entries in the sync queue.
-// This checks for INSERT or FEEDBACK operations that haven't been synced yet.
-// Returns 0 if the queue is empty.
+// HasPendingSync returns the count of unpushed local changes.
+// Counts entries in both sync_queue (legacy) and change_log (new).
+// Returns 0 if no pending changes exist.
 func (s *Store) HasPendingSync() (int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1445,15 +1539,22 @@ func (s *Store) HasPendingSync() (int, error) {
 		return 0, ErrStoreClosed
 	}
 
-	var count int
+	var sqCount int
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM sync_queue
 		WHERE operation IN ('INSERT', 'FEEDBACK')
-	`).Scan(&count)
+	`).Scan(&sqCount)
 	if err != nil {
-		return 0, fmt.Errorf("store: count pending sync: %w", err)
+		return 0, fmt.Errorf("store: count pending sync_queue: %w", err)
 	}
-	return count, nil
+
+	var clCount int
+	err = s.db.QueryRow(`SELECT COUNT(*) FROM change_log`).Scan(&clCount)
+	if err != nil {
+		return 0, fmt.Errorf("store: count pending change_log: %w", err)
+	}
+
+	return sqCount + clCount, nil
 }
 
 // ClearAllLore removes all lore entries and clears the sync queue.
