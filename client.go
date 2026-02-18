@@ -372,11 +372,12 @@ func (c *Client) SyncPush(ctx context.Context) error {
 }
 
 // SyncPull pulls updates from Engram.
+// Delegates to SyncDelta for incremental change-log based sync.
 func (c *Client) SyncPull(ctx context.Context) error {
 	if c.syncer == nil {
 		return ErrOffline
 	}
-	return c.syncer.Pull(ctx)
+	return c.syncer.SyncDelta(ctx)
 }
 
 // SyncDelta fetches and applies incremental changes from Engram.

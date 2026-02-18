@@ -178,13 +178,12 @@ type SchemaMismatchError struct {
 // Sync performs a full sync cycle: push pending, then pull updates.
 //
 // Deprecated: Use SyncPush() to push changes and SyncDelta() to pull updates.
-// Sync() will be removed in v2.0. The Pull() component of Sync() does not
-// apply delta changes to the local store; use SyncDelta() for full sync.
+// Sync() will be removed in v2.0.
 func (s *Syncer) Sync(ctx context.Context) error {
 	if err := s.Push(ctx); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
-	if err := s.Pull(ctx); err != nil {
+	if err := s.SyncDelta(ctx); err != nil {
 		return fmt.Errorf("pull: %w", err)
 	}
 	return nil
@@ -381,21 +380,153 @@ func truncate(s string, max int) string {
 }
 
 
-// Pull fetches updates from Engram.
-//
-// Deprecated: Pull is a no-op. The legacy lore-based delta protocol was removed
-// in Story 10.1. Use the new change_log-based sync protocol (Epic 10) instead.
-func (s *Syncer) Pull(ctx context.Context) error {
-	return nil
-}
+// syncDeltaPageLimit is the maximum number of entries requested per delta page.
+const syncDeltaPageLimit = 500
 
 // SyncDelta fetches and applies incremental changes from Engram.
 //
-// Note: The legacy lore-based delta sync was removed in Story 10.1.
-// The new change_log-based delta sync will be implemented in a later story.
-// Until then, SyncDelta() is a no-op that returns nil.
+// Process:
+//  1. Return ErrOffline if engramURL is empty
+//  2. Read last_pull_seq from sync_meta (defaults to 0)
+//  3. GET deltaPath()?after={last_pull_seq}&limit=500
+//  4. Parse SyncDeltaResponse
+//  5. For each entry, skip if source_id matches client's own source_id
+//  6. Apply upserts via Store.UpsertLore (embedding_status = pending)
+//  7. Apply deletes via Store.SoftDeleteLoreAt (using received_at)
+//  8. Update sync_meta.last_pull_seq to response.last_sequence
+//  9. If has_more, loop from step 3 with updated last_pull_seq
 func (s *Syncer) SyncDelta(ctx context.Context) error {
-	return nil
+	if s.engramURL == "" {
+		return ErrOffline
+	}
+
+	ownSourceID := s.store.SourceID()
+
+	// Read last_pull_seq from sync_meta
+	lastPullSeqStr, err := s.store.GetSyncMeta("last_pull_seq")
+	if err != nil {
+		return fmt.Errorf("sync delta: read last_pull_seq: %w", err)
+	}
+	lastPullSeq := int64(0)
+	if lastPullSeqStr != "" {
+		lastPullSeq, err = strconv.ParseInt(lastPullSeqStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("sync delta: parse last_pull_seq: %w", err)
+		}
+	}
+
+	for {
+		// Build request URL
+		reqURL := fmt.Sprintf("%s%s?after=%d&limit=%d",
+			s.engramURL, s.deltaPath(), lastPullSeq, syncDeltaPageLimit)
+
+		req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		if err != nil {
+			return fmt.Errorf("sync delta: create request: %w", err)
+		}
+		s.setHeaders(req)
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return fmt.Errorf("sync delta: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return fmt.Errorf("sync delta: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		}
+
+		var deltaResp SyncDeltaResponse
+		if err := json.NewDecoder(resp.Body).Decode(&deltaResp); err != nil {
+			_ = resp.Body.Close()
+			return fmt.Errorf("sync delta: decode response: %w", err)
+		}
+		_ = resp.Body.Close()
+
+		// Apply entries, filtering out own source_id
+		for _, entry := range deltaResp.Entries {
+			if entry.SourceID == ownSourceID {
+				continue // skip own entries
+			}
+
+			switch entry.Operation {
+			case "upsert":
+				if err := s.applyDeltaUpsert(entry); err != nil {
+					return fmt.Errorf("sync delta: apply upsert %s: %w", entry.EntityID, err)
+				}
+			case "delete":
+				if err := s.store.SoftDeleteLoreAt(entry.EntityID, entry.ReceivedAt); err != nil {
+					return fmt.Errorf("sync delta: apply delete %s: %w", entry.EntityID, err)
+				}
+			}
+		}
+
+		// Update last_pull_seq
+		lastPullSeq = deltaResp.LastSequence
+		if err := s.store.SetSyncMeta("last_pull_seq", strconv.FormatInt(lastPullSeq, 10)); err != nil {
+			return fmt.Errorf("sync delta: update last_pull_seq: %w", err)
+		}
+
+		if !deltaResp.HasMore {
+			return nil
+		}
+	}
+}
+
+// applyDeltaUpsert parses a delta entry payload and upserts the lore entry.
+func (s *Syncer) applyDeltaUpsert(entry DeltaEntry) error {
+	var payload struct {
+		ID              string   `json:"id"`
+		Content         string   `json:"content"`
+		Context         string   `json:"context,omitempty"`
+		Category        string   `json:"category"`
+		Confidence      float64  `json:"confidence"`
+		EmbeddingStatus string   `json:"embedding_status"`
+		SourceID        string   `json:"source_id"`
+		Sources         []string `json:"sources"`
+		ValidationCount int      `json:"validation_count"`
+		CreatedAt       string   `json:"created_at"`
+		UpdatedAt       string   `json:"updated_at"`
+		DeletedAt       *string  `json:"deleted_at"`
+		LastValidatedAt *string  `json:"last_validated_at"`
+	}
+	if err := json.Unmarshal(entry.Payload, &payload); err != nil {
+		return fmt.Errorf("unmarshal payload: %w", err)
+	}
+
+	createdAt, err := time.Parse(time.RFC3339, payload.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("parse created_at: %w", err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339, payload.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("parse updated_at: %w", err)
+	}
+
+	lore := &Lore{
+		ID:              payload.ID,
+		Content:         payload.Content,
+		Context:         payload.Context,
+		Category:        Category(payload.Category),
+		Confidence:      payload.Confidence,
+		EmbeddingStatus: "pending", // AC #3: embedding_status set to pending
+		SourceID:        payload.SourceID,
+		Sources:         payload.Sources,
+		ValidationCount: payload.ValidationCount,
+		CreatedAt:       createdAt,
+		UpdatedAt:       updatedAt,
+	}
+
+	if payload.LastValidatedAt != nil {
+		ts, err := time.Parse(time.RFC3339, *payload.LastValidatedAt)
+		if err != nil {
+			return fmt.Errorf("parse last_validated_at: %w", err)
+		}
+		lore.LastValidatedAt = &ts
+	}
+
+	return s.store.UpsertLore(lore)
 }
 
 // Bootstrap downloads a full snapshot from Engram and replaces the local lore.

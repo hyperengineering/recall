@@ -1622,6 +1622,27 @@ func (s *Store) DeleteLoreByID(id string) error {
 	return tx.Commit()
 }
 
+// SoftDeleteLoreAt soft-deletes a lore entry using a specified timestamp.
+// Used by delta sync to apply remote delete operations with the server's received_at.
+// Unlike DeleteLoreByID, this does NOT write a change_log entry (the change came from the server).
+func (s *Store) SoftDeleteLoreAt(id, deletedAt string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	_, err := s.db.Exec(`
+		UPDATE lore_entries SET deleted_at = ?, updated_at = ?
+		WHERE id = ?
+	`, deletedAt, deletedAt, id)
+	if err != nil {
+		return fmt.Errorf("store: soft delete lore at: %w", err)
+	}
+	return nil
+}
+
 // HasPendingSync returns the count of unpushed local changes.
 // Counts entries in both sync_queue (legacy) and change_log (new).
 // Returns 0 if no pending changes exist.
