@@ -11,11 +11,11 @@ import (
 
 // ============================================================================
 // Syncer.Push() / Syncer.Flush() / Syncer.Pull() / Syncer.SyncDelta() tests
-// Story 9.3/10.1: Push, Flush, Pull, and SyncDelta are no-ops.
-// New change_log-based sync will be implemented in later stories.
+// Story 10.2: Push and Flush delegate to SyncPush.
+// Pull and SyncDelta remain no-ops (pending later stories).
 // ============================================================================
 
-func TestSyncer_Push_NoOp(t *testing.T) {
+func TestSyncer_Push_EmptyChangeLog(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
 	if err != nil {
@@ -34,14 +34,14 @@ func TestSyncer_Push_NoOp(t *testing.T) {
 
 	err = syncer.Push(context.Background())
 	if err != nil {
-		t.Errorf("Push should return nil: %v", err)
+		t.Errorf("Push with empty change_log should return nil: %v", err)
 	}
 	if httpCalled {
-		t.Error("Push should not make HTTP calls (no-op)")
+		t.Error("Push should not make HTTP calls when change_log is empty")
 	}
 }
 
-func TestSyncer_Flush_NoOp(t *testing.T) {
+func TestSyncer_Flush_EmptyChangeLog(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := NewStore(dbPath)
 	if err != nil {
@@ -60,10 +60,10 @@ func TestSyncer_Flush_NoOp(t *testing.T) {
 
 	err = syncer.Flush(context.Background())
 	if err != nil {
-		t.Errorf("Flush should return nil: %v", err)
+		t.Errorf("Flush with empty change_log should return nil: %v", err)
 	}
 	if httpCalled {
-		t.Error("Flush should not make HTTP calls (no-op)")
+		t.Error("Flush should not make HTTP calls when change_log is empty")
 	}
 }
 

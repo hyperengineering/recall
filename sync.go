@@ -1,12 +1,15 @@
 package recall
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -213,13 +216,161 @@ func (s *Syncer) Health(ctx context.Context) (*engramHealthResponse, error) {
 	return &health, nil
 }
 
-// Push sends pending changes to Engram.
-//
-// Note: The legacy sync_queue-based push was removed in Story 9.3.
-// The new change_log-based push will be implemented in Epic 10.
-// Until then, Push() is a no-op that returns nil.
+// Push sends pending changes to Engram using the universal sync protocol.
 func (s *Syncer) Push(ctx context.Context) error {
-	return nil
+	return s.SyncPush(ctx)
+}
+
+// syncPushBatchSize is the maximum number of change_log entries per push request.
+const syncPushBatchSize = 1000
+
+// syncPushMaxRetries is the maximum number of retries on transient errors.
+const syncPushMaxRetries = 5
+
+// generatePushID returns a new UUID v4 string for push idempotency.
+func generatePushID() string {
+	var uuid [16]byte
+	_, _ = rand.Read(uuid[:])
+	uuid[6] = (uuid[6] & 0x0f) | 0x40 // version 4
+	uuid[8] = (uuid[8] & 0x3f) | 0x80 // variant 2
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])
+}
+
+// SyncPush pushes local change_log entries to Engram via POST /sync/push.
+//
+// Process:
+//  1. Read last_push_seq from sync_meta
+//  2. Read up to 1000 entries from change_log where seq > last_push_seq
+//  3. If empty, return nil (no-op)
+//  4. Generate UUID push_id, build SyncPushRequest, POST to /sync/push
+//  5. On 200: update last_push_seq, loop if more entries remain
+//  6. On 422: return validation error (no retry)
+//  7. On 409: return schema mismatch error (halt sync)
+//  8. On transient error: retry with same push_id (exponential backoff)
+func (s *Syncer) SyncPush(ctx context.Context) error {
+	sourceID := s.store.SourceID()
+
+	// Read last_push_seq from sync_meta
+	lastPushSeqStr, err := s.store.GetSyncMeta("last_push_seq")
+	if err != nil {
+		return fmt.Errorf("sync push: read last_push_seq: %w", err)
+	}
+	lastPushSeq := int64(0)
+	if lastPushSeqStr != "" {
+		lastPushSeq, err = strconv.ParseInt(lastPushSeqStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("sync push: parse last_push_seq: %w", err)
+		}
+	}
+
+	for {
+		entries, err := s.store.UnpushedChanges(sourceID, lastPushSeq, syncPushBatchSize)
+		if err != nil {
+			return fmt.Errorf("sync push: read changes: %w", err)
+		}
+		if len(entries) == 0 {
+			return nil
+		}
+
+		pushID := generatePushID()
+		req := SyncPushRequest{
+			PushID:        pushID,
+			SourceID:      sourceID,
+			SchemaVersion: 2,
+			Entries:       entries,
+		}
+
+		resp, err := s.doSyncPush(ctx, req)
+		if err != nil {
+			return err
+		}
+
+		// Update last_push_seq to the highest local sequence pushed
+		highestSeq := entries[len(entries)-1].Sequence
+		if err := s.store.SetSyncMeta("last_push_seq", strconv.FormatInt(highestSeq, 10)); err != nil {
+			return fmt.Errorf("sync push: update last_push_seq: %w", err)
+		}
+		lastPushSeq = highestSeq
+
+		_ = resp // response logged if debug enabled
+
+		// If we got fewer than batch size, we're done
+		if len(entries) < syncPushBatchSize {
+			return nil
+		}
+		// Otherwise loop for next batch
+	}
+}
+
+// doSyncPush sends a single push request with retry on transient errors.
+func (s *Syncer) doSyncPush(ctx context.Context, pushReq SyncPushRequest) (*SyncPushResponse, error) {
+	body, err := json.Marshal(pushReq)
+	if err != nil {
+		return nil, fmt.Errorf("sync push: marshal request: %w", err)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= syncPushMaxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 1s, 2s, 4s, 8s, 16s (capped at 60s)
+			delay := time.Duration(1<<uint(attempt-1)) * time.Second
+			if delay > 60*time.Second {
+				delay = 60 * time.Second
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", s.engramURL+s.pushPath(), bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("sync push: create request: %w", err)
+		}
+		s.setHeaders(req)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("sync push: %w", err)
+			continue // retry with same push_id
+		}
+
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		switch resp.StatusCode {
+		case http.StatusOK:
+			var pushResp SyncPushResponse
+			if err := json.Unmarshal(respBody, &pushResp); err != nil {
+				return nil, fmt.Errorf("sync push: decode response: %w", err)
+			}
+			return &pushResp, nil
+
+		case http.StatusUnprocessableEntity:
+			var valErr SyncValidationError
+			if err := json.Unmarshal(respBody, &valErr); err != nil {
+				return nil, fmt.Errorf("sync push: validation error (decode failed): %s", truncate(string(respBody), 200))
+			}
+			return nil, fmt.Errorf("sync push: validation error: %d entries rejected", len(valErr.Errors))
+
+		case http.StatusConflict:
+			var schemaErr SchemaMismatchError
+			if err := json.Unmarshal(respBody, &schemaErr); err != nil {
+				return nil, fmt.Errorf("sync push: schema mismatch (decode failed): %s", truncate(string(respBody), 200))
+			}
+			return nil, fmt.Errorf("sync push: schema mismatch: %s", schemaErr.Detail)
+
+		default:
+			// Transient error — retry
+			lastErr = fmt.Errorf("sync push: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+			continue
+		}
+	}
+
+	return nil, fmt.Errorf("sync push: max retries exceeded: %w", lastErr)
 }
 
 func truncate(s string, max int) string {
@@ -305,13 +456,10 @@ func (s *Syncer) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-// Flush pushes all pending lore immediately (used on shutdown).
-//
-// Note: The legacy sync_queue-based flush was removed in Story 9.3.
-// The new change_log-based flush will be implemented in Epic 10.
-// Until then, Flush() is a no-op that returns nil.
+// Flush pushes all pending changes immediately (used on shutdown).
+// Delegates to SyncPush.
 func (s *Syncer) Flush(ctx context.Context) error {
-	return nil
+	return s.SyncPush(ctx)
 }
 
 func (s *Syncer) setHeaders(req *http.Request) {
