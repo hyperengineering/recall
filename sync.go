@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +40,9 @@ type Syncer struct {
 	sourceID  string
 	client    *http.Client
 	debug     *DebugLogger
+
+	// sleepFn is used for testable retry delays. If nil, defaults to real sleep.
+	sleepFn func(ctx context.Context, d time.Duration) error
 }
 
 // NewSyncer creates a new syncer.
@@ -529,15 +534,39 @@ func (s *Syncer) applyDeltaUpsert(entry DeltaEntry) error {
 	return s.store.UpsertLore(lore)
 }
 
+// bootstrapMaxRetries is the maximum number of snapshot download attempts on 503.
+const bootstrapMaxRetries = 3
+
+// bootstrapDefaultRetryAfter is the default Retry-After duration when header is missing.
+const bootstrapDefaultRetryAfter = 60 * time.Second
+
+// contextSleep sleeps for the given duration, respecting context cancellation.
+// Uses s.sleepFn if set (for testing), otherwise real sleep.
+func (s *Syncer) contextSleep(ctx context.Context, d time.Duration) error {
+	if s.sleepFn != nil {
+		return s.sleepFn(ctx, d)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
 // Bootstrap downloads a full snapshot from Engram and replaces the local lore.
 //
 // Process:
 //  1. HealthCheck() to validate connectivity and get embedding model
 //  2. Compare embedding model with local metadata
 //  3. If mismatch and not first-time, return ErrModelMismatch
-//  4. Download snapshot and stream to store
-//  5. Store atomically replaces lore table
-//  6. Update metadata (embedding_model, last_sync)
+//  4. Download snapshot with 503 retry (up to 3 attempts, Retry-After header)
+//  5. Write snapshot to temp file
+//  6. Verify with PRAGMA integrity_check (discard on failure, preserve existing DB)
+//  7. Read MAX(change_log.sequence) from snapshot for sync sequence tracking
+//  8. Atomically replace local lore via store
+//  9. Initialize sync_meta: last_pull_seq, last_push_seq=0, fresh source_id
+//  10. Update metadata (embedding_model, last_sync)
 func (s *Syncer) Bootstrap(ctx context.Context) error {
 	// 1. Health check
 	health, err := s.Health(ctx)
@@ -553,30 +582,88 @@ func (s *Syncer) Bootstrap(ctx context.Context) error {
 			ErrModelMismatch, localModel, health.EmbeddingModel)
 	}
 
-	// 3. Download snapshot
-	req, err := http.NewRequestWithContext(ctx, "GET", s.engramURL+s.snapshotPath(), nil)
+	// 3. Download snapshot with 503 retry
+	snapshotData, err := s.downloadSnapshotWithRetry(ctx)
 	if err != nil {
-		return fmt.Errorf("bootstrap: create request: %w", err)
+		return err
 	}
-	s.setHeaders(req)
 
-	resp, err := s.client.Do(req)
+	// 4. Write to temp file
+	tmpFile, err := os.CreateTemp("", "recall-bootstrap-*.db")
 	if err != nil {
-		return fmt.Errorf("bootstrap: download: %w", err)
+		return fmt.Errorf("bootstrap: create temp file: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
 
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("bootstrap: download failed: %s - %s", resp.Status, string(respBody))
+	if _, err := tmpFile.Write(snapshotData); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("bootstrap: write temp file: %w", err)
+	}
+	_ = tmpFile.Close()
+
+	// 5. Open temp file as SQLite and run PRAGMA integrity_check
+	snapshotDB, err := sql.Open("sqlite", tmpPath)
+	if err != nil {
+		return fmt.Errorf("bootstrap: integrity check: open snapshot: %w", err)
 	}
 
-	// 4. Replace local store (atomic)
-	if err := s.store.ReplaceFromSnapshot(resp.Body); err != nil {
+	var integrityResult string
+	if err := snapshotDB.QueryRow("PRAGMA integrity_check").Scan(&integrityResult); err != nil {
+		_ = snapshotDB.Close()
+		return fmt.Errorf("bootstrap: integrity check failed: %w", err)
+	}
+	if integrityResult != "ok" {
+		_ = snapshotDB.Close()
+		return fmt.Errorf("bootstrap: integrity check failed: %s", integrityResult)
+	}
+
+	// 6. Read MAX(change_log.sequence) from snapshot
+	maxSeq := int64(0)
+	// change_log table may not exist in the snapshot — that's OK, default to 0
+	var tableExists int
+	_ = snapshotDB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='change_log'").Scan(&tableExists)
+	if tableExists > 0 {
+		var maxSeqNull sql.NullInt64
+		_ = snapshotDB.QueryRow("SELECT MAX(sequence) FROM change_log").Scan(&maxSeqNull)
+		if maxSeqNull.Valid {
+			maxSeq = maxSeqNull.Int64
+		}
+	}
+	_ = snapshotDB.Close()
+
+	// 7. Atomic replacement: open temp file and pass to store
+	snapshotFile, err := os.Open(tmpPath)
+	if err != nil {
+		return fmt.Errorf("bootstrap: reopen snapshot: %w", err)
+	}
+	if err := s.store.ReplaceFromSnapshot(snapshotFile); err != nil {
+		_ = snapshotFile.Close()
 		return fmt.Errorf("bootstrap: replace store: %w", err)
 	}
+	_ = snapshotFile.Close()
 
-	// 5. Update metadata
+	// 8. Initialize sync_meta
+	// last_pull_seq = MAX(change_log.sequence) from snapshot
+	if err := s.store.SetSyncMeta("last_pull_seq", strconv.FormatInt(maxSeq, 10)); err != nil {
+		return fmt.Errorf("bootstrap: set last_pull_seq: %w", err)
+	}
+	// last_push_seq = 0 (fresh start)
+	if err := s.store.SetSyncMeta("last_push_seq", "0"); err != nil {
+		return fmt.Errorf("bootstrap: set last_push_seq: %w", err)
+	}
+	// Fresh UUIDv4 source_id
+	newSourceID, err := generateUUIDv4()
+	if err != nil {
+		return fmt.Errorf("bootstrap: generate source_id: %w", err)
+	}
+	if err := s.store.SetSyncMeta("source_id", newSourceID); err != nil {
+		return fmt.Errorf("bootstrap: set source_id: %w", err)
+	}
+	// Update cached source_id on store
+	s.store.sourceID = newSourceID
+
+	// 9. Update metadata
 	if err := s.store.SetMetadata("embedding_model", health.EmbeddingModel); err != nil {
 		return fmt.Errorf("bootstrap: set embedding_model: %w", err)
 	}
@@ -585,6 +672,56 @@ func (s *Syncer) Bootstrap(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// downloadSnapshotWithRetry downloads the snapshot, retrying up to 3 times on 503.
+func (s *Syncer) downloadSnapshotWithRetry(ctx context.Context) ([]byte, error) {
+	for attempt := 0; attempt < bootstrapMaxRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "GET", s.engramURL+s.snapshotPath(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap: create request: %w", err)
+		}
+		s.setHeaders(req)
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap: download: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			data, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				return nil, fmt.Errorf("bootstrap: read snapshot: %w", err)
+			}
+			return data, nil
+		}
+
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			_ = resp.Body.Close()
+
+			// Parse Retry-After header (seconds)
+			retryAfter := bootstrapDefaultRetryAfter
+			if retryStr := resp.Header.Get("Retry-After"); retryStr != "" {
+				if secs, err := strconv.Atoi(retryStr); err == nil && secs > 0 {
+					retryAfter = time.Duration(secs) * time.Second
+				}
+			}
+
+			// Sleep (respecting context cancellation)
+			if err := s.contextSleep(ctx, retryAfter); err != nil {
+				return nil, fmt.Errorf("bootstrap: retry cancelled: %w", err)
+			}
+			continue
+		}
+
+		// Non-retryable error
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("bootstrap: download failed: %s - %s", resp.Status, string(respBody))
+	}
+
+	return nil, fmt.Errorf("bootstrap: snapshot unavailable after %d retries", bootstrapMaxRetries)
 }
 
 // Flush pushes all pending changes immediately (used on shutdown).
