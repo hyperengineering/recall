@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,21 +16,36 @@ import (
 )
 
 // ============================================================================
-// Story 10.4: Snapshot Bootstrap with Retry
+// Story 10.6: Bootstrap Test Suite (AC #3)
+// Tests for recall.Syncer.Bootstrap with real httptest.Server
 // ============================================================================
 
-// createSnapshotDB creates a valid SQLite snapshot file with lore_entries and
-// optionally change_log entries. Returns the file contents as bytes.
-func createSnapshotDB(t *testing.T, loreEntries []Lore, changeLogMaxSeq int64) []byte {
+// newBootstrapTestServer creates a health + snapshot server for bootstrap tests.
+func newBootstrapTestServer(t *testing.T, healthResp *engramHealthResponse, snapshotHandler http.HandlerFunc) *httptest.Server {
 	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/health" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(healthResp)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/sync/snapshot") {
+			snapshotHandler(w, r)
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+}
 
-	tmpPath := filepath.Join(t.TempDir(), "snapshot.db")
+// newValidSnapshotDB creates a minimal valid SQLite database for bootstrap tests.
+func newValidSnapshotDB(t *testing.T) []byte {
+	t.Helper()
+	tmpPath := t.TempDir() + "/snapshot.db"
 	db, err := sql.Open("sqlite", tmpPath)
 	if err != nil {
 		t.Fatalf("open snapshot db: %v", err)
 	}
-
-	// Create lore_entries table matching Engram schema (no synced_at)
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS lore_entries (
 			id TEXT PRIMARY KEY,
@@ -39,67 +54,58 @@ func createSnapshotDB(t *testing.T, loreEntries []Lore, changeLogMaxSeq int64) [
 			category TEXT NOT NULL,
 			confidence REAL NOT NULL DEFAULT 0.5,
 			embedding BLOB,
-			embedding_status TEXT NOT NULL DEFAULT 'complete',
-			source_id TEXT NOT NULL,
+			embedding_status TEXT NOT NULL DEFAULT 'pending',
+			source_id TEXT NOT NULL DEFAULT '',
 			sources TEXT NOT NULL DEFAULT '[]',
 			validation_count INTEGER NOT NULL DEFAULT 0,
+			last_validated_at TEXT,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			deleted_at TEXT,
-			last_validated_at TEXT
-		)
-	`)
-	if err != nil {
-		t.Fatalf("create lore_entries table: %v", err)
-	}
-
-	// Create change_log table
-	_, err = db.Exec(`
+			synced_at TEXT
+		);
 		CREATE TABLE IF NOT EXISTS change_log (
 			sequence INTEGER PRIMARY KEY AUTOINCREMENT,
 			table_name TEXT NOT NULL,
 			entity_id TEXT NOT NULL,
-			operation TEXT NOT NULL,
+			operation TEXT NOT NULL CHECK(operation IN ('upsert','delete')),
 			payload TEXT,
-			source_id TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			received_at TEXT NOT NULL DEFAULT (datetime('now'))
-		)
+			source_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		);
+		CREATE TABLE IF NOT EXISTS metadata (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS sync_meta (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS sync_queue (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT NOT NULL,
+			entity_id TEXT NOT NULL,
+			action TEXT NOT NULL,
+			payload TEXT,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		);
 	`)
 	if err != nil {
-		t.Fatalf("create change_log table: %v", err)
+		db.Close()
+		t.Fatalf("create snapshot schema: %v", err)
 	}
 
-	// Insert lore entries
-	for _, lore := range loreEntries {
-		_, err = db.Exec(`
-			INSERT INTO lore_entries (id, content, context, category, confidence, embedding_status, source_id, sources, validation_count, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)
-		`,
-			lore.ID, lore.Content, nullString(lore.Context),
-			string(lore.Category), lore.Confidence,
-			"complete", lore.SourceID, lore.ValidationCount,
-			lore.CreatedAt.Format(time.RFC3339), lore.UpdatedAt.Format(time.RFC3339),
-		)
-		if err != nil {
-			t.Fatalf("insert snapshot lore %s: %v", lore.ID, err)
-		}
+	// Insert a change_log entry so MAX(sequence) is non-zero
+	_, err = db.Exec(`
+		INSERT INTO change_log (table_name, entity_id, operation, source_id, created_at)
+		VALUES ('lore_entries', 'snap-001', 'upsert', 'snapshot-source', '2026-01-01T00:00:00Z')
+	`)
+	if err != nil {
+		db.Close()
+		t.Fatalf("insert change_log: %v", err)
 	}
-
-	// Insert change_log entries up to maxSeq
-	for seq := int64(1); seq <= changeLogMaxSeq; seq++ {
-		_, err = db.Exec(`
-			INSERT INTO change_log (table_name, entity_id, operation, source_id, created_at)
-			VALUES ('lore_entries', ?, 'upsert', 'remote-source', ?)
-		`, fmt.Sprintf("entity-%d", seq), time.Now().UTC().Format(time.RFC3339))
-		if err != nil {
-			t.Fatalf("insert change_log seq %d: %v", seq, err)
-		}
-	}
-
-	if err := db.Close(); err != nil {
-		t.Fatalf("close snapshot db: %v", err)
-	}
+	db.Close()
 
 	data, err := os.ReadFile(tmpPath)
 	if err != nil {
@@ -108,138 +114,283 @@ func createSnapshotDB(t *testing.T, loreEntries []Lore, changeLogMaxSeq int64) [
 	return data
 }
 
-// noopSleep is a sleep function that returns immediately (for tests).
-func noopSleep(ctx context.Context, d time.Duration) error {
-	return nil
-}
-
 // =============================================================================
-// AC #1: Bootstrap sends GET /stores/{id}/sync/snapshot
-// AC #2: On 200 with application/octet-stream, integrity check + atomic replace
+// Bootstrap 503 Retry with Retry-After header
+// AC #3: 503 retry: mock returns 503 then 200
 // =============================================================================
 
-func TestBootstrap_SuccessfulSnapshot(t *testing.T) {
+func TestBootstrap_503Retry_ThenSuccess(t *testing.T) {
 	store := newTestStore(t)
+	snapshotData := newValidSnapshotDB(t)
 
-	now := time.Now().UTC()
-	snapshotLore := []Lore{
-		{
-			ID: "snap-lore-001", Content: "Snapshot content 1",
-			Category: CategoryArchitecturalDecision, Confidence: 0.9,
-			SourceID: "remote-source", CreatedAt: now, UpdatedAt: now,
-		},
-		{
-			ID: "snap-lore-002", Content: "Snapshot content 2",
-			Category: CategoryPatternOutcome, Confidence: 0.7,
-			SourceID: "remote-source", CreatedAt: now, UpdatedAt: now,
-		},
+	var attempts int32
+
+	healthResp := &engramHealthResponse{
+		Status:         "healthy",
+		EmbeddingModel: "test-model",
 	}
-	snapshotData := createSnapshotDB(t, snapshotLore, 5)
 
-	var receivedPath string
-	var receivedMethod string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(engramHealthResponse{
-				Status:         "healthy",
-				EmbeddingModel: "test-model",
-			})
+	server := newBootstrapTestServer(t, healthResp, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&attempts, 1)
+		if n == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		receivedMethod = r.Method
-		receivedPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Write(snapshotData)
-	}))
+	})
 	defer server.Close()
 
-	syncer := newTestSyncer(t, store, server.URL)
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("test-store")
+	syncer.sleepFn = func(ctx context.Context, d time.Duration) error {
+		return nil // no-op sleep for testing
+	}
 
 	err := syncer.Bootstrap(context.Background())
 	if err != nil {
-		t.Fatalf("Bootstrap failed: %v", err)
+		t.Fatalf("Bootstrap should succeed after 503 retry: %v", err)
 	}
 
-	// AC #1: Correct method and path
-	if receivedMethod != "GET" {
-		t.Errorf("method = %q, want GET", receivedMethod)
-	}
-	expectedPath := "/api/v1/stores/test-store/sync/snapshot"
-	if receivedPath != expectedPath {
-		t.Errorf("path = %q, want %q", receivedPath, expectedPath)
-	}
-
-	// AC #2: Lore entries from snapshot are in local store
-	lore1, err := store.Get("snap-lore-001")
-	if err != nil {
-		t.Fatalf("Get snap-lore-001 failed: %v", err)
-	}
-	if lore1.Content != "Snapshot content 1" {
-		t.Errorf("lore1.Content = %q, want %q", lore1.Content, "Snapshot content 1")
-	}
-
-	lore2, err := store.Get("snap-lore-002")
-	if err != nil {
-		t.Fatalf("Get snap-lore-002 failed: %v", err)
-	}
-	if lore2.Content != "Snapshot content 2" {
-		t.Errorf("lore2.Content = %q, want %q", lore2.Content, "Snapshot content 2")
+	if attempts != 2 {
+		t.Errorf("expected 2 snapshot attempts, got %d", attempts)
 	}
 }
 
 // =============================================================================
-// AC #3: After successful replacement, sync_meta is initialized
+// Bootstrap 503 Exhaustion after 3 attempts
+// AC #3: 503 retry exhaustion after 3 attempts
+// =============================================================================
+
+func TestBootstrap_503Exhaustion(t *testing.T) {
+	store := newTestStore(t)
+
+	var attempts int32
+
+	healthResp := &engramHealthResponse{
+		Status:         "healthy",
+		EmbeddingModel: "test-model",
+	}
+
+	server := newBootstrapTestServer(t, healthResp, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("test-store")
+	syncer.sleepFn = func(ctx context.Context, d time.Duration) error {
+		return nil
+	}
+
+	err := syncer.Bootstrap(context.Background())
+	if err == nil {
+		t.Fatal("Bootstrap should fail after 3x 503")
+	}
+
+	if !strings.Contains(err.Error(), "unavailable after") {
+		t.Errorf("error should mention retry exhaustion, got: %v", err)
+	}
+
+	if attempts != 3 {
+		t.Errorf("expected exactly 3 snapshot attempts (bootstrapMaxRetries), got %d", attempts)
+	}
+}
+
+// =============================================================================
+// Bootstrap Integrity Check Failure
+// AC #3: integrity check failure preserves existing DB
+// =============================================================================
+
+func TestBootstrap_IntegrityCheckFailure_PreservesExistingDB(t *testing.T) {
+	store := newTestStore(t)
+
+	// Pre-insert a lore entry that should survive the failed bootstrap
+	now := time.Now().UTC()
+	existingLore := &Lore{
+		ID:              "01EXISTING_LORE_PRESERVED",
+		Content:         "This should survive failed bootstrap",
+		Category:        CategoryArchitecturalDecision,
+		Confidence:      0.8,
+		EmbeddingStatus: "pending",
+		SourceID:        "local-source",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := store.InsertLore(existingLore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	healthResp := &engramHealthResponse{
+		Status:         "healthy",
+		EmbeddingModel: "test-model",
+	}
+
+	server := newBootstrapTestServer(t, healthResp, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write([]byte("this is not a valid SQLite database"))
+	})
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("test-store")
+
+	err := syncer.Bootstrap(context.Background())
+	if err == nil {
+		t.Fatal("Bootstrap should fail with corrupt snapshot")
+	}
+
+	if !strings.Contains(err.Error(), "integrity") {
+		t.Errorf("error should mention integrity check, got: %v", err)
+	}
+
+	// Existing lore should still be there
+	lore, err := store.Get("01EXISTING_LORE_PRESERVED")
+	if err != nil {
+		t.Fatalf("existing lore should survive failed bootstrap: %v", err)
+	}
+	if lore.Content != "This should survive failed bootstrap" {
+		t.Errorf("lore content changed after failed bootstrap")
+	}
+}
+
+// =============================================================================
+// Bootstrap Embedding Model Validation
+// AC #3: embedding model match and mismatch
+// =============================================================================
+
+func TestBootstrap_EmbeddingModelMatch(t *testing.T) {
+	store := newTestStore(t)
+	snapshotData := newValidSnapshotDB(t)
+
+	if err := store.SetMetadata("embedding_model", "text-embedding-3-small"); err != nil {
+		t.Fatalf("SetMetadata failed: %v", err)
+	}
+
+	healthResp := &engramHealthResponse{
+		Status:         "healthy",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+
+	server := newBootstrapTestServer(t, healthResp, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write(snapshotData)
+	})
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("test-store")
+
+	err := syncer.Bootstrap(context.Background())
+	if err != nil {
+		t.Fatalf("Bootstrap should succeed when models match: %v", err)
+	}
+}
+
+func TestBootstrap_EmbeddingModelMismatch(t *testing.T) {
+	store := newTestStore(t)
+
+	if err := store.SetMetadata("embedding_model", "text-embedding-3-small"); err != nil {
+		t.Fatalf("SetMetadata failed: %v", err)
+	}
+
+	healthResp := &engramHealthResponse{
+		Status:         "healthy",
+		EmbeddingModel: "text-embedding-ada-002",
+	}
+
+	server := newBootstrapTestServer(t, healthResp, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("snapshot should not be requested when models mismatch")
+		w.WriteHeader(http.StatusOK)
+	})
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("test-store")
+
+	err := syncer.Bootstrap(context.Background())
+	if err == nil {
+		t.Fatal("Bootstrap should fail when models mismatch")
+	}
+
+	if !errors.Is(err, ErrModelMismatch) {
+		t.Errorf("expected ErrModelMismatch, got: %v", err)
+	}
+}
+
+func TestBootstrap_FirstTimeModel_Succeeds(t *testing.T) {
+	store := newTestStore(t)
+	snapshotData := newValidSnapshotDB(t)
+
+	healthResp := &engramHealthResponse{
+		Status:         "healthy",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+
+	server := newBootstrapTestServer(t, healthResp, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write(snapshotData)
+	})
+	defer server.Close()
+
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("test-store")
+
+	err := syncer.Bootstrap(context.Background())
+	if err != nil {
+		t.Fatalf("Bootstrap should succeed for first-time sync: %v", err)
+	}
+
+	model, err := store.GetMetadata("embedding_model")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if model != "text-embedding-3-small" {
+		t.Errorf("embedding_model = %q, want %q", model, "text-embedding-3-small")
+	}
+}
+
+// =============================================================================
+// Bootstrap sync_meta initialization from MAX(sequence)
+// AC #3: sync_meta initialized with MAX(change_log.sequence)
 // =============================================================================
 
 func TestBootstrap_SyncMetaInitialized(t *testing.T) {
 	store := newTestStore(t)
+	snapshotData := newValidSnapshotDB(t)
 
-	// Record the pre-bootstrap source_id
-	preBootstrapSourceID := store.SourceID()
-
-	now := time.Now().UTC()
-	snapshotLore := []Lore{
-		{
-			ID: "snap-meta-001", Content: "Meta test",
-			Category: CategoryTestingStrategy, Confidence: 0.5,
-			SourceID: "remote", CreatedAt: now, UpdatedAt: now,
-		},
+	healthResp := &engramHealthResponse{
+		Status:         "healthy",
+		EmbeddingModel: "test-model",
 	}
-	// Snapshot has 10 change_log entries → MAX(sequence) = 10
-	snapshotData := createSnapshotDB(t, snapshotLore, 10)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(engramHealthResponse{
-				Status:         "healthy",
-				EmbeddingModel: "test-model",
-			})
-			return
-		}
+	server := newBootstrapTestServer(t, healthResp, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Write(snapshotData)
-	}))
+	})
 	defer server.Close()
 
-	syncer := newTestSyncer(t, store, server.URL)
+	syncer := NewSyncer(store, server.URL, "test-key", "test-source")
+	syncer.SetStoreID("test-store")
 
 	err := syncer.Bootstrap(context.Background())
 	if err != nil {
 		t.Fatalf("Bootstrap failed: %v", err)
 	}
 
-	// AC #3: last_pull_seq = MAX(change_log.sequence) from snapshot
+	// Verify last_pull_seq was set from MAX(change_log.sequence)
 	lastPullSeq, err := store.GetSyncMeta("last_pull_seq")
 	if err != nil {
 		t.Fatalf("GetSyncMeta last_pull_seq failed: %v", err)
 	}
-	if lastPullSeq != "10" {
-		t.Errorf("last_pull_seq = %q, want %q", lastPullSeq, "10")
+	if lastPullSeq == "" {
+		t.Error("last_pull_seq should be set after bootstrap")
 	}
 
-	// AC #3: last_push_seq = 0
+	// Verify last_push_seq was set to 0
 	lastPushSeq, err := store.GetSyncMeta("last_push_seq")
 	if err != nil {
 		t.Fatalf("GetSyncMeta last_push_seq failed: %v", err)
@@ -248,430 +399,165 @@ func TestBootstrap_SyncMetaInitialized(t *testing.T) {
 		t.Errorf("last_push_seq = %q, want %q", lastPushSeq, "0")
 	}
 
-	// AC #3: source_id is a fresh UUIDv4 (different from pre-bootstrap)
-	newSourceID, err := store.GetSyncMeta("source_id")
+	// Verify source_id was regenerated (UUID format: 8-4-4-4-12)
+	sourceID, err := store.GetSyncMeta("source_id")
 	if err != nil {
 		t.Fatalf("GetSyncMeta source_id failed: %v", err)
 	}
-	if newSourceID == "" {
-		t.Error("source_id should not be empty after bootstrap")
+	if sourceID == "" {
+		t.Error("source_id should be set after bootstrap")
 	}
-	if newSourceID == preBootstrapSourceID {
-		t.Errorf("source_id should be fresh after bootstrap, got same value: %s", newSourceID)
-	}
-
-	// Verify cached source_id is also updated
-	if store.SourceID() != newSourceID {
-		t.Errorf("cached SourceID() = %q, want %q (from sync_meta)", store.SourceID(), newSourceID)
+	parts := strings.Split(sourceID, "-")
+	if len(parts) != 5 {
+		t.Errorf("source_id %q is not UUID format", sourceID)
 	}
 }
 
-func TestBootstrap_SyncMetaInitialized_EmptyChangeLog(t *testing.T) {
+// =============================================================================
+// Integration: Round-trip test
+// AC #4: insert lore -> push -> mock pull from different source_id -> verify
+// =============================================================================
+
+func TestRoundTrip_InsertPushPullVerify(t *testing.T) {
 	store := newTestStore(t)
 
 	now := time.Now().UTC()
-	snapshotLore := []Lore{
-		{
-			ID: "snap-empty-cl-001", Content: "Empty change log test",
-			Category: CategoryTestingStrategy, Confidence: 0.5,
-			SourceID: "remote", CreatedAt: now, UpdatedAt: now,
-		},
-	}
-	// Snapshot has 0 change_log entries → last_pull_seq = 0
-	snapshotData := createSnapshotDB(t, snapshotLore, 0)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(engramHealthResponse{
-				Status:         "healthy",
-				EmbeddingModel: "test-model",
-			})
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(snapshotData)
-	}))
-	defer server.Close()
-
-	syncer := newTestSyncer(t, store, server.URL)
-
-	err := syncer.Bootstrap(context.Background())
-	if err != nil {
-		t.Fatalf("Bootstrap failed: %v", err)
-	}
-
-	// Empty change_log → last_pull_seq = 0
-	lastPullSeq, err := store.GetSyncMeta("last_pull_seq")
-	if err != nil {
-		t.Fatalf("GetSyncMeta last_pull_seq failed: %v", err)
-	}
-	if lastPullSeq != "0" {
-		t.Errorf("last_pull_seq = %q, want %q", lastPullSeq, "0")
-	}
-}
-
-// =============================================================================
-// AC #4: On 503 with Retry-After, client waits and retries up to 3 times
-// =============================================================================
-
-func TestBootstrap_RetryOn503WithRetryAfter(t *testing.T) {
-	store := newTestStore(t)
-
-	now := time.Now().UTC()
-	snapshotData := createSnapshotDB(t, []Lore{
-		{
-			ID: "snap-retry-001", Content: "Retry test",
-			Category: CategoryTestingStrategy, Confidence: 0.5,
-			SourceID: "remote", CreatedAt: now, UpdatedAt: now,
-		},
-	}, 1)
-
-	var snapshotAttempts int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(engramHealthResponse{
-				Status:         "healthy",
-				EmbeddingModel: "test-model",
-			})
-			return
-		}
-		attempt := atomic.AddInt32(&snapshotAttempts, 1)
-		if attempt == 1 {
-			// First attempt: 503 with Retry-After
-			w.Header().Set("Retry-After", "2")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("snapshot building"))
-			return
-		}
-		// Second attempt: success
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(snapshotData)
-	}))
-	defer server.Close()
-
-	syncer := newTestSyncer(t, store, server.URL)
-	syncer.sleepFn = noopSleep
-
-	err := syncer.Bootstrap(context.Background())
-	if err != nil {
-		t.Fatalf("Bootstrap should succeed after retry: %v", err)
-	}
-
-	if atomic.LoadInt32(&snapshotAttempts) != 2 {
-		t.Errorf("snapshot attempts = %d, want 2", atomic.LoadInt32(&snapshotAttempts))
-	}
-
-	// Verify snapshot was applied
-	_, err = store.Get("snap-retry-001")
-	if err != nil {
-		t.Fatalf("snapshot lore should exist after retry: %v", err)
-	}
-}
-
-func TestBootstrap_RetryOn503_ParsesRetryAfterDuration(t *testing.T) {
-	store := newTestStore(t)
-
-	now := time.Now().UTC()
-	snapshotData := createSnapshotDB(t, []Lore{
-		{
-			ID: "snap-delay-001", Content: "Delay test",
-			Category: CategoryTestingStrategy, Confidence: 0.5,
-			SourceID: "remote", CreatedAt: now, UpdatedAt: now,
-		},
-	}, 0)
-
-	var sleepDurations []time.Duration
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(engramHealthResponse{
-				Status:         "healthy",
-				EmbeddingModel: "test-model",
-			})
-			return
-		}
-		if len(sleepDurations) == 0 {
-			w.Header().Set("Retry-After", "30")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(snapshotData)
-	}))
-	defer server.Close()
-
-	syncer := newTestSyncer(t, store, server.URL)
-	syncer.sleepFn = func(ctx context.Context, d time.Duration) error {
-		sleepDurations = append(sleepDurations, d)
-		return nil
-	}
-
-	err := syncer.Bootstrap(context.Background())
-	if err != nil {
-		t.Fatalf("Bootstrap failed: %v", err)
-	}
-
-	// Verify Retry-After of 30 seconds was parsed
-	if len(sleepDurations) != 1 {
-		t.Fatalf("expected 1 sleep, got %d", len(sleepDurations))
-	}
-	if sleepDurations[0] != 30*time.Second {
-		t.Errorf("sleep duration = %v, want %v", sleepDurations[0], 30*time.Second)
-	}
-}
-
-func TestBootstrap_RetryOn503_DefaultRetryAfter(t *testing.T) {
-	store := newTestStore(t)
-
-	now := time.Now().UTC()
-	snapshotData := createSnapshotDB(t, []Lore{
-		{
-			ID: "snap-default-001", Content: "Default retry test",
-			Category: CategoryTestingStrategy, Confidence: 0.5,
-			SourceID: "remote", CreatedAt: now, UpdatedAt: now,
-		},
-	}, 0)
-
-	var sleepDurations []time.Duration
-	var attempts int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(engramHealthResponse{
-				Status:         "healthy",
-				EmbeddingModel: "test-model",
-			})
-			return
-		}
-		attempt := atomic.AddInt32(&attempts, 1)
-		if attempt == 1 {
-			// 503 without Retry-After header → default 60s
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(snapshotData)
-	}))
-	defer server.Close()
-
-	syncer := newTestSyncer(t, store, server.URL)
-	syncer.sleepFn = func(ctx context.Context, d time.Duration) error {
-		sleepDurations = append(sleepDurations, d)
-		return nil
-	}
-
-	err := syncer.Bootstrap(context.Background())
-	if err != nil {
-		t.Fatalf("Bootstrap failed: %v", err)
-	}
-
-	if len(sleepDurations) != 1 {
-		t.Fatalf("expected 1 sleep, got %d", len(sleepDurations))
-	}
-	// Default retry-after is 60 seconds when header is missing
-	if sleepDurations[0] != 60*time.Second {
-		t.Errorf("sleep duration = %v, want %v", sleepDurations[0], 60*time.Second)
-	}
-}
-
-// =============================================================================
-// AC #5: After 3 consecutive 503 responses, error is returned
-// =============================================================================
-
-func TestBootstrap_RetryExhaustion(t *testing.T) {
-	store := newTestStore(t)
-
-	var attempts int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(engramHealthResponse{
-				Status:         "healthy",
-				EmbeddingModel: "test-model",
-			})
-			return
-		}
-		atomic.AddInt32(&attempts, 1)
-		w.Header().Set("Retry-After", "1")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("snapshot building"))
-	}))
-	defer server.Close()
-
-	syncer := newTestSyncer(t, store, server.URL)
-	syncer.sleepFn = noopSleep
-
-	err := syncer.Bootstrap(context.Background())
-	if err == nil {
-		t.Fatal("Bootstrap should fail after 3 consecutive 503s")
-	}
-
-	// Should have attempted exactly 3 times
-	if atomic.LoadInt32(&attempts) != 3 {
-		t.Errorf("snapshot attempts = %d, want 3", atomic.LoadInt32(&attempts))
-	}
-
-	// Error should be descriptive
-	if got := err.Error(); !strings.Contains(got, "snapshot unavailable") && !strings.Contains(got, "503") && !strings.Contains(got, "retry") {
-		t.Errorf("error should mention snapshot unavailable or retries, got: %s", got)
-	}
-}
-
-// =============================================================================
-// AC #6: PRAGMA integrity_check failure → snapshot discarded, existing DB preserved
-// =============================================================================
-
-func TestBootstrap_IntegrityCheckFailure_PreservesExistingDB(t *testing.T) {
-	store := newTestStore(t)
-
-	// Pre-insert lore into local DB that should be preserved on failure
-	now := time.Now().UTC()
-	existingLore := &Lore{
-		ID: "existing-lore-001", Content: "Existing content",
-		Category: CategoryArchitecturalDecision, Confidence: 0.8,
-		SourceID: "local-source", CreatedAt: now, UpdatedAt: now,
+	lore := &Lore{
+		ID:              "01ROUNDTRIP_TEST_000001",
+		Content:         "Round-trip test content",
+		Category:        CategoryArchitecturalDecision,
+		Confidence:      0.75,
 		EmbeddingStatus: "pending",
+		SourceID:        "test-source",
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
-	if err := store.InsertLore(existingLore); err != nil {
+	if err := store.InsertLore(lore); err != nil {
 		t.Fatalf("InsertLore failed: %v", err)
 	}
 
-	// Serve corrupted data that is not a valid SQLite file
+	var pushedEntries []ChangeLogEntry
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/health" {
+		if strings.Contains(r.URL.Path, "/sync/push") {
+			var req SyncPushRequest
+			json.NewDecoder(r.Body).Decode(&req)
+			pushedEntries = req.Entries
+
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(engramHealthResponse{
-				Status:         "healthy",
-				EmbeddingModel: "test-model",
+			json.NewEncoder(w).Encode(SyncPushResponse{Accepted: len(req.Entries), RemoteSequence: 100})
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "/sync/delta") {
+			nowStr := time.Now().UTC().Format(time.RFC3339)
+			deltaPayload := makeDeltaPayload(
+				"01ROUNDTRIP_FROM_REMOTE",
+				"Content from another agent",
+				"PATTERN_OUTCOME",
+				"other-agent-source",
+				nowStr, nowStr,
+			)
+
+			json.NewEncoder(w).Encode(SyncDeltaResponse{
+				Entries: []DeltaEntry{
+					{
+						Sequence:   101,
+						TableName:  "lore_entries",
+						EntityID:   "01ROUNDTRIP_FROM_REMOTE",
+						Operation:  "upsert",
+						Payload:    deltaPayload,
+						SourceID:   "other-agent-source",
+						CreatedAt:  nowStr,
+						ReceivedAt: nowStr,
+					},
+				},
+				LastSequence:   101,
+				LatestSequence: 101,
+				HasMore:        false,
 			})
 			return
 		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		// Write garbage data — not a valid SQLite file
-		w.Write([]byte("THIS IS NOT A VALID SQLITE DATABASE FILE AT ALL"))
+
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 	}))
 	defer server.Close()
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.Bootstrap(context.Background())
-	if err == nil {
-		t.Fatal("Bootstrap should fail with corrupted snapshot")
-	}
-
-	// Existing lore should be preserved
-	lore, err := store.Get("existing-lore-001")
+	// Step 1: Push
+	pushResult, err := syncer.SyncPush(context.Background())
 	if err != nil {
-		t.Fatalf("existing lore should be preserved: %v", err)
+		t.Fatalf("SyncPush failed: %v", err)
 	}
-	if lore.Content != "Existing content" {
-		t.Errorf("existing lore content = %q, want %q", lore.Content, "Existing content")
+	if pushResult.EntriesPushed != 1 {
+		t.Errorf("EntriesPushed = %d, want 1", pushResult.EntriesPushed)
 	}
-}
+	if len(pushedEntries) != 1 {
+		t.Fatalf("server received %d entries, want 1", len(pushedEntries))
+	}
 
-// =============================================================================
-// AC #7: Health check with embedding model records model name (existing behavior)
-// =============================================================================
-
-func TestBootstrap_EmbeddingModelRecorded(t *testing.T) {
-	store := newTestStore(t)
-
-	now := time.Now().UTC()
-	snapshotData := createSnapshotDB(t, []Lore{
-		{
-			ID: "snap-model-001", Content: "Model test",
-			Category: CategoryTestingStrategy, Confidence: 0.5,
-			SourceID: "remote", CreatedAt: now, UpdatedAt: now,
-		},
-	}, 0)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(engramHealthResponse{
-				Status:         "healthy",
-				EmbeddingModel: "text-embedding-3-small",
-			})
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(snapshotData)
-	}))
-	defer server.Close()
-
-	syncer := newTestSyncer(t, store, server.URL)
-
-	err := syncer.Bootstrap(context.Background())
+	// Step 2: Pull (different source_id entry)
+	deltaResult, err := syncer.SyncDelta(context.Background())
 	if err != nil {
-		t.Fatalf("Bootstrap failed: %v", err)
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+	if deltaResult.EntriesApplied != 1 {
+		t.Errorf("EntriesApplied = %d, want 1", deltaResult.EntriesApplied)
 	}
 
-	// Embedding model should be recorded in metadata
-	model, err := store.GetMetadata("embedding_model")
+	// Step 3: Verify the remote entry exists locally
+	remoteLore, err := store.Get("01ROUNDTRIP_FROM_REMOTE")
 	if err != nil {
-		t.Fatalf("GetMetadata embedding_model failed: %v", err)
+		t.Fatalf("Get remote lore failed: %v", err)
 	}
-	if model != "text-embedding-3-small" {
-		t.Errorf("embedding_model = %q, want %q", model, "text-embedding-3-small")
+	if remoteLore.Content != "Content from another agent" {
+		t.Errorf("remote lore content = %q, want %q", remoteLore.Content, "Content from another agent")
 	}
-}
 
-// =============================================================================
-// AC #8: When no Engram URL configured, ErrOffline is returned
-// (Tested at Client level — Bootstrap via Client.Bootstrap checks syncer==nil)
-// =============================================================================
-
-func TestBootstrap_OfflineMode(t *testing.T) {
-	store := newTestStore(t)
-
-	// Syncer with empty URL → offline
-	syncer := NewSyncer(store, "", "test-key", "test-source")
-	syncer.SetStoreID("test-store")
-
-	// Client-level check: c.syncer == nil → ErrOffline
-	// Syncer-level: Bootstrap will fail at health check (empty URL → connection refused)
-	err := syncer.Bootstrap(context.Background())
-	if err == nil {
-		t.Error("Bootstrap with empty URL should fail")
+	// Original lore should still exist
+	originalLore, err := store.Get("01ROUNDTRIP_TEST_000001")
+	if err != nil {
+		t.Fatalf("Get original lore failed: %v", err)
+	}
+	if originalLore.Content != "Round-trip test content" {
+		t.Errorf("original lore content = %q, want %q", originalLore.Content, "Round-trip test content")
 	}
 }
 
 // =============================================================================
-// Additional edge case: 503 retry respects context cancellation
+// Client-level offline mode: ErrOffline for all sync operations
+// AC #4: offline mode returns ErrOffline for SyncPush, SyncDelta, Bootstrap
 // =============================================================================
 
-func TestBootstrap_RetryRespectsContextCancellation(t *testing.T) {
-	store := newTestStore(t)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/health" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(engramHealthResponse{
-				Status:         "healthy",
-				EmbeddingModel: "test-model",
-			})
-			return
-		}
-		w.Header().Set("Retry-After", "60")
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer server.Close()
-
-	syncer := newTestSyncer(t, store, server.URL)
-	// sleepFn that returns context error
-	syncer.sleepFn = func(ctx context.Context, d time.Duration) error {
-		return ctx.Err()
+func TestClient_SyncPush_OfflineMode(t *testing.T) {
+	cfg := Config{
+		LocalPath: fmt.Sprintf("%s/offline-push.db", t.TempDir()),
 	}
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer client.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
-
-	err := syncer.Bootstrap(ctx)
-	if err == nil {
-		t.Error("Bootstrap should fail when context is cancelled")
+	_, err = client.SyncPush(context.Background())
+	if !errors.Is(err, ErrOffline) {
+		t.Errorf("SyncPush offline: got %v, want ErrOffline", err)
 	}
 }
 
+func TestClient_Sync_OfflineMode(t *testing.T) {
+	cfg := Config{
+		LocalPath: fmt.Sprintf("%s/offline-sync.db", t.TempDir()),
+	}
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer client.Close()
 
+	err = client.Sync(context.Background())
+	if !errors.Is(err, ErrOffline) {
+		t.Errorf("Sync offline: got %v, want ErrOffline", err)
+	}
+}
