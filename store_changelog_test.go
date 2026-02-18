@@ -3,6 +3,7 @@ package recall
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -696,5 +697,345 @@ func TestDeleteLoreByID_TransactionRollbackOnFailure(t *testing.T) {
 	clCount := getChangeLogCount(t, store)
 	if clCount != 1 {
 		t.Errorf("change_log count = %d, want 1", clCount)
+	}
+}
+
+// =============================================================================
+// Story 9.3: Change Log Read API
+// =============================================================================
+
+// --- Task 1: UnpushedChanges ---
+
+func TestUnpushedChanges_ReturnsEntriesAfterSeq(t *testing.T) {
+	store := newTestStore(t)
+	sourceID := store.SourceID()
+
+	// Insert 3 lore entries → 3 change_log entries
+	for i := 1; i <= 3; i++ {
+		now := time.Now().UTC()
+		lore := &Lore{
+			ID:              fmt.Sprintf("01TESTID_UNPUSH_%05d", i),
+			Content:         fmt.Sprintf("Content %d", i),
+			Category:        CategoryArchitecturalDecision,
+			Confidence:      0.5,
+			EmbeddingStatus: "pending",
+			SourceID:        "test-source",
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		if err := store.InsertLore(lore); err != nil {
+			t.Fatalf("InsertLore #%d failed: %v", i, err)
+		}
+	}
+
+	// Get all entries (afterSeq=0)
+	entries, err := store.UnpushedChanges(sourceID, 0, 100)
+	if err != nil {
+		t.Fatalf("UnpushedChanges failed: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("len = %d, want 3", len(entries))
+	}
+
+	// Get entries after the first one
+	firstSeq := entries[0].Sequence
+	entries2, err := store.UnpushedChanges(sourceID, firstSeq, 100)
+	if err != nil {
+		t.Fatalf("UnpushedChanges after seq %d failed: %v", firstSeq, err)
+	}
+	if len(entries2) != 2 {
+		t.Errorf("len = %d, want 2 (after seq %d)", len(entries2), firstSeq)
+	}
+}
+
+func TestUnpushedChanges_RespectsLimit(t *testing.T) {
+	store := newTestStore(t)
+	sourceID := store.SourceID()
+
+	// Insert 5 lore entries
+	for i := 1; i <= 5; i++ {
+		now := time.Now().UTC()
+		lore := &Lore{
+			ID:              fmt.Sprintf("01TESTID_LIMIT_%05d", i),
+			Content:         fmt.Sprintf("Content %d", i),
+			Category:        CategoryArchitecturalDecision,
+			Confidence:      0.5,
+			EmbeddingStatus: "pending",
+			SourceID:        "test-source",
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		if err := store.InsertLore(lore); err != nil {
+			t.Fatalf("InsertLore #%d failed: %v", i, err)
+		}
+	}
+
+	entries, err := store.UnpushedChanges(sourceID, 0, 2)
+	if err != nil {
+		t.Fatalf("UnpushedChanges failed: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("len = %d, want 2 (limit)", len(entries))
+	}
+}
+
+func TestUnpushedChanges_OrderedBySequenceASC(t *testing.T) {
+	store := newTestStore(t)
+	sourceID := store.SourceID()
+
+	// Insert 3 lore entries
+	for i := 1; i <= 3; i++ {
+		now := time.Now().UTC()
+		lore := &Lore{
+			ID:              fmt.Sprintf("01TESTID_ORDER_%05d", i),
+			Content:         fmt.Sprintf("Content %d", i),
+			Category:        CategoryArchitecturalDecision,
+			Confidence:      0.5,
+			EmbeddingStatus: "pending",
+			SourceID:        "test-source",
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		if err := store.InsertLore(lore); err != nil {
+			t.Fatalf("InsertLore #%d failed: %v", i, err)
+		}
+	}
+
+	entries, err := store.UnpushedChanges(sourceID, 0, 100)
+	if err != nil {
+		t.Fatalf("UnpushedChanges failed: %v", err)
+	}
+
+	for i := 1; i < len(entries); i++ {
+		if entries[i].Sequence <= entries[i-1].Sequence {
+			t.Errorf("entries not ordered: seq[%d]=%d <= seq[%d]=%d",
+				i, entries[i].Sequence, i-1, entries[i-1].Sequence)
+		}
+	}
+}
+
+func TestUnpushedChanges_FiltersSourceID(t *testing.T) {
+	store := newTestStore(t)
+	sourceID := store.SourceID()
+
+	// Insert a lore entry (creates change_log with store's source_id)
+	now := time.Now().UTC()
+	lore := &Lore{
+		ID:              "01TESTID_FILTER_SRC_001",
+		Content:         "Test content",
+		Category:        CategoryArchitecturalDecision,
+		Confidence:      0.5,
+		EmbeddingStatus: "pending",
+		SourceID:        "test-source",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	// Insert a change_log entry with a different source_id directly
+	_, err := store.db.Exec(`
+		INSERT INTO change_log (table_name, entity_id, operation, source_id, created_at)
+		VALUES ('lore_entries', 'other-entity', 'upsert', 'other-source-id', '2024-01-01T00:00:00Z')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert foreign change_log: %v", err)
+	}
+
+	// Query with store's source_id — should only get the one entry
+	entries, err := store.UnpushedChanges(sourceID, 0, 100)
+	if err != nil {
+		t.Fatalf("UnpushedChanges failed: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("len = %d, want 1 (filtered by source_id)", len(entries))
+	}
+}
+
+func TestUnpushedChanges_EmptyResult(t *testing.T) {
+	store := newTestStore(t)
+	sourceID := store.SourceID()
+
+	entries, err := store.UnpushedChanges(sourceID, 0, 100)
+	if err != nil {
+		t.Fatalf("UnpushedChanges failed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("len = %d, want 0", len(entries))
+	}
+}
+
+func TestUnpushedChanges_EntryFields(t *testing.T) {
+	store := newTestStore(t)
+	sourceID := store.SourceID()
+
+	now := time.Now().UTC()
+	lore := &Lore{
+		ID:              "01TESTID_FIELDS_00001",
+		Content:         "Fields test",
+		Category:        CategoryArchitecturalDecision,
+		Confidence:      0.5,
+		EmbeddingStatus: "pending",
+		SourceID:        "test-source",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+
+	entries, err := store.UnpushedChanges(sourceID, 0, 100)
+	if err != nil {
+		t.Fatalf("UnpushedChanges failed: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len = %d, want 1", len(entries))
+	}
+
+	e := entries[0]
+	if e.Sequence <= 0 {
+		t.Errorf("Sequence = %d, want > 0", e.Sequence)
+	}
+	if e.TableName != "lore_entries" {
+		t.Errorf("TableName = %q, want %q", e.TableName, "lore_entries")
+	}
+	if e.EntityID != lore.ID {
+		t.Errorf("EntityID = %q, want %q", e.EntityID, lore.ID)
+	}
+	if e.Operation != "upsert" {
+		t.Errorf("Operation = %q, want %q", e.Operation, "upsert")
+	}
+	if e.Payload == nil {
+		t.Error("Payload should not be nil for upsert")
+	}
+	if e.SourceID != sourceID {
+		t.Errorf("SourceID = %q, want %q", e.SourceID, sourceID)
+	}
+	if e.CreatedAt == "" {
+		t.Error("CreatedAt should not be empty")
+	}
+}
+
+func TestUnpushedChanges_StoreClosed(t *testing.T) {
+	store := newTestStore(t)
+	store.Close()
+
+	_, err := store.UnpushedChanges("any", 0, 100)
+	if err != ErrStoreClosed {
+		t.Errorf("UnpushedChanges on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+// --- Task 2: GetSyncMeta / SetSyncMeta ---
+
+func TestGetSyncMeta_ExistingKey(t *testing.T) {
+	store := newTestStore(t)
+
+	// source_id is seeded by initSyncMeta
+	val, err := store.GetSyncMeta("source_id")
+	if err != nil {
+		t.Fatalf("GetSyncMeta failed: %v", err)
+	}
+	if val == "" {
+		t.Error("GetSyncMeta('source_id') should return non-empty value")
+	}
+}
+
+func TestGetSyncMeta_MissingKey(t *testing.T) {
+	store := newTestStore(t)
+
+	val, err := store.GetSyncMeta("nonexistent_key")
+	if err != nil {
+		t.Fatalf("GetSyncMeta failed: %v", err)
+	}
+	if val != "" {
+		t.Errorf("GetSyncMeta('nonexistent_key') = %q, want empty string", val)
+	}
+}
+
+func TestSetSyncMeta_InsertAndRead(t *testing.T) {
+	store := newTestStore(t)
+
+	err := store.SetSyncMeta("test_key", "test_value")
+	if err != nil {
+		t.Fatalf("SetSyncMeta failed: %v", err)
+	}
+
+	val, err := store.GetSyncMeta("test_key")
+	if err != nil {
+		t.Fatalf("GetSyncMeta failed: %v", err)
+	}
+	if val != "test_value" {
+		t.Errorf("val = %q, want %q", val, "test_value")
+	}
+}
+
+func TestSetSyncMeta_UpdateExisting(t *testing.T) {
+	store := newTestStore(t)
+
+	// Set initial
+	store.SetSyncMeta("update_key", "initial")
+	// Update
+	err := store.SetSyncMeta("update_key", "updated")
+	if err != nil {
+		t.Fatalf("SetSyncMeta update failed: %v", err)
+	}
+
+	val, err := store.GetSyncMeta("update_key")
+	if err != nil {
+		t.Fatalf("GetSyncMeta failed: %v", err)
+	}
+	if val != "updated" {
+		t.Errorf("val = %q, want %q", val, "updated")
+	}
+}
+
+func TestGetSyncMeta_StoreClosed(t *testing.T) {
+	store := newTestStore(t)
+	store.Close()
+
+	_, err := store.GetSyncMeta("any")
+	if err != ErrStoreClosed {
+		t.Errorf("GetSyncMeta on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+func TestSetSyncMeta_StoreClosed(t *testing.T) {
+	store := newTestStore(t)
+	store.Close()
+
+	err := store.SetSyncMeta("key", "value")
+	if err != ErrStoreClosed {
+		t.Errorf("SetSyncMeta on closed store = %v, want ErrStoreClosed", err)
+	}
+}
+
+// --- Task 3: GetSourceID ---
+
+func TestGetSourceID_ReturnsSourceIDFromSyncMeta(t *testing.T) {
+	store := newTestStore(t)
+
+	id, err := store.GetSourceID()
+	if err != nil {
+		t.Fatalf("GetSourceID failed: %v", err)
+	}
+	if id == "" {
+		t.Error("GetSourceID should return non-empty value")
+	}
+
+	// Should match the cached value
+	if id != store.SourceID() {
+		t.Errorf("GetSourceID() = %q, want %q (cached)", id, store.SourceID())
+	}
+}
+
+func TestGetSourceID_StoreClosed(t *testing.T) {
+	store := newTestStore(t)
+	store.Close()
+
+	_, err := store.GetSourceID()
+	if err != ErrStoreClosed {
+		t.Errorf("GetSourceID on closed store = %v, want ErrStoreClosed", err)
 	}
 }

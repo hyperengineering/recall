@@ -1221,6 +1221,98 @@ func (s *Store) scanSnapshotLoreRows(rows *sql.Rows) (*Lore, error) {
 	return &lore, nil
 }
 
+// ChangeLogEntry represents a single row from the change_log table.
+type ChangeLogEntry struct {
+	Sequence  int64   `json:"sequence"`
+	TableName string  `json:"table_name"`
+	EntityID  string  `json:"entity_id"`
+	Operation string  `json:"operation"`
+	Payload   *string `json:"payload"`
+	SourceID  string  `json:"source_id"`
+	CreatedAt string  `json:"created_at"`
+}
+
+// UnpushedChanges returns change_log entries for a given sourceID after a given
+// sequence number, ordered by sequence ASC, limited to limit rows.
+func (s *Store) UnpushedChanges(sourceID string, afterSeq int64, limit int) ([]ChangeLogEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	rows, err := s.db.Query(`
+		SELECT sequence, table_name, entity_id, operation, payload, source_id, created_at
+		FROM change_log
+		WHERE sequence > ? AND source_id = ?
+		ORDER BY sequence ASC
+		LIMIT ?
+	`, afterSeq, sourceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: query unpushed changes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var entries []ChangeLogEntry
+	for rows.Next() {
+		var e ChangeLogEntry
+		var payload sql.NullString
+		if err := rows.Scan(&e.Sequence, &e.TableName, &e.EntityID, &e.Operation, &payload, &e.SourceID, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("store: scan change_log: %w", err)
+		}
+		if payload.Valid {
+			e.Payload = &payload.String
+		}
+		entries = append(entries, e)
+	}
+
+	return entries, rows.Err()
+}
+
+// GetSyncMeta retrieves a value from the sync_meta table.
+// Returns empty string if key not found.
+func (s *Store) GetSyncMeta(key string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return "", ErrStoreClosed
+	}
+
+	var value sql.NullString
+	err := s.db.QueryRow("SELECT value FROM sync_meta WHERE key = ?", key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: get sync meta: %w", err)
+	}
+	return value.String, nil
+}
+
+// SetSyncMeta persists a key-value pair in the sync_meta table via INSERT OR REPLACE.
+func (s *Store) SetSyncMeta(key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	_, err := s.db.Exec("INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)", key, value)
+	if err != nil {
+		return fmt.Errorf("store: set sync meta: %w", err)
+	}
+	return nil
+}
+
+// GetSourceID returns the source_id value from sync_meta (live DB read).
+// For the cached value, use SourceID() instead.
+func (s *Store) GetSourceID() (string, error) {
+	return s.GetSyncMeta("source_id")
+}
+
 // PendingFeedback returns feedback entries pending sync.
 // This is a stub for Story 4.3 (Push sync).
 func (s *Store) PendingFeedback() ([]FeedbackEntry, error) {
