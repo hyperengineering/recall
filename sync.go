@@ -55,9 +55,8 @@ func (s *Syncer) SetDebugLogger(logger *DebugLogger) {
 	s.debug = logger
 }
 
-// SetStoreID sets the store context for multi-store sync operations.
-// When set, sync operations use store-prefixed API paths (e.g., /api/v1/stores/{storeID}/lore).
-// When empty, operations use the original /api/v1/lore/* paths for backward compatibility.
+// SetStoreID sets the store context for sync operations.
+// All sync path helpers require a non-empty storeID and will panic if not set.
 func (s *Syncer) SetStoreID(storeID string) {
 	s.storeID = storeID
 }
@@ -76,36 +75,31 @@ func encodeStoreID(storeID string) string {
 	return url.PathEscape(storeID)
 }
 
-// lorePath returns the API path for lore operations, considering store context.
-func (s *Syncer) lorePath() string {
+// pushPath returns the API path for sync push operations.
+// Panics if storeID is not set — all sync operations require a store context.
+func (s *Syncer) pushPath() string {
 	if s.storeID == "" {
-		return "/api/v1/lore"
+		panic("recall: pushPath requires storeID to be set")
 	}
-	return fmt.Sprintf("/api/v1/stores/%s/lore", encodeStoreID(s.storeID))
+	return fmt.Sprintf("/api/v1/stores/%s/sync/push", encodeStoreID(s.storeID))
 }
 
-// feedbackPath returns the API path for feedback operations, considering store context.
-func (s *Syncer) feedbackPath() string {
-	if s.storeID == "" {
-		return "/api/v1/lore/feedback"
-	}
-	return fmt.Sprintf("/api/v1/stores/%s/lore/feedback", encodeStoreID(s.storeID))
-}
-
-// deltaPath returns the API path for delta operations, considering store context.
+// deltaPath returns the API path for sync delta operations.
+// Panics if storeID is not set — all sync operations require a store context.
 func (s *Syncer) deltaPath() string {
 	if s.storeID == "" {
-		return "/api/v1/lore/delta"
+		panic("recall: deltaPath requires storeID to be set")
 	}
-	return fmt.Sprintf("/api/v1/stores/%s/lore/delta", encodeStoreID(s.storeID))
+	return fmt.Sprintf("/api/v1/stores/%s/sync/delta", encodeStoreID(s.storeID))
 }
 
-// snapshotPath returns the API path for snapshot operations, considering store context.
+// snapshotPath returns the API path for sync snapshot operations.
+// Panics if storeID is not set — all sync operations require a store context.
 func (s *Syncer) snapshotPath() string {
 	if s.storeID == "" {
-		return "/api/v1/lore/snapshot"
+		panic("recall: snapshotPath requires storeID to be set")
 	}
-	return fmt.Sprintf("/api/v1/stores/%s/lore/snapshot", encodeStoreID(s.storeID))
+	return fmt.Sprintf("/api/v1/stores/%s/sync/snapshot", encodeStoreID(s.storeID))
 }
 
 // engramHealthResponse represents the Engram health check response.
@@ -117,53 +111,66 @@ type engramHealthResponse struct {
 	LastSnapshot   string `json:"last_snapshot"`
 }
 
-// engramIngestRequest represents a batch of lore to ingest.
-type engramIngestRequest struct {
-	SourceID string          `json:"source_id"`
-	Lore     []engramLoreDTO `json:"lore"`
-	Flush    bool            `json:"flush,omitempty"`
+// =============================================================================
+// Sync Protocol DTOs (Story 10.1)
+// =============================================================================
+
+// SyncPushRequest is the request body for POST /sync/push.
+type SyncPushRequest struct {
+	PushID        string           `json:"push_id"`
+	SourceID      string           `json:"source_id"`
+	SchemaVersion int              `json:"schema_version"`
+	Entries       []ChangeLogEntry `json:"entries"`
 }
 
-// engramLoreDTO represents lore in the Engram API format.
-// Used for both push (ingest) and delta (pull) operations.
-// Note: This type partially mirrors internal/sync.LoreEntry. See engramDeltaResponse
-// comment for explanation of why duplication exists.
-type engramLoreDTO struct {
-	ID              string   `json:"id"`
-	Content         string   `json:"content"`
-	Context         string   `json:"context,omitempty"`
-	Category        string   `json:"category"`
-	Confidence      float64  `json:"confidence"`
-	Sources         []string `json:"sources"`
-	ValidationCount int      `json:"validation_count"`
-	SourceID        string   `json:"source_id,omitempty"`
-	EmbeddingStatus string   `json:"embedding_status"`
-	CreatedAt       string   `json:"created_at"`
-	UpdatedAt       string   `json:"updated_at,omitempty"`
+// SyncPushResponse is the response from POST /sync/push.
+type SyncPushResponse struct {
+	Accepted       int   `json:"accepted"`
+	RemoteSequence int64 `json:"remote_sequence"`
 }
 
-// engramDeltaResponse represents the delta sync response.
-// Note: This type mirrors internal/sync.DeltaResult. The duplication exists because
-// internal/sync imports the recall package (for recall.SyncError), creating an import
-// cycle that prevents sharing types. A future refactor could extract shared types
-// to a separate package (e.g., internal/types) to eliminate this duplication.
-type engramDeltaResponse struct {
-	Lore       []engramLoreDTO `json:"lore"`
-	DeletedIDs []string        `json:"deleted_ids"`
-	AsOf       string          `json:"as_of"`
+// SyncDeltaResponse is the response from GET /sync/delta.
+type SyncDeltaResponse struct {
+	Entries        []DeltaEntry `json:"entries"`
+	LastSequence   int64        `json:"last_sequence"`
+	LatestSequence int64        `json:"latest_sequence"`
+	HasMore        bool         `json:"has_more"`
 }
 
-// engramFeedbackRequest represents feedback to send.
-type engramFeedbackRequest struct {
-	SourceID string                   `json:"source_id"`
-	Feedback []engramFeedbackEntryDTO `json:"feedback"`
+// DeltaEntry represents a single entry in the delta response.
+type DeltaEntry struct {
+	Sequence   int64           `json:"sequence"`
+	TableName  string          `json:"table_name"`
+	EntityID   string          `json:"entity_id"`
+	Operation  string          `json:"operation"`
+	Payload    json.RawMessage `json:"payload"`
+	SourceID   string          `json:"source_id"`
+	CreatedAt  string          `json:"created_at"`
+	ReceivedAt string          `json:"received_at"`
 }
 
-// engramFeedbackEntryDTO represents a single feedback entry.
-type engramFeedbackEntryDTO struct {
-	LoreID string `json:"lore_id"`
-	Type   string `json:"type"` // helpful | not_relevant | incorrect
+// SyncValidationError represents a 422 response from POST /sync/push.
+type SyncValidationError struct {
+	Accepted int          `json:"accepted"`
+	Errors   []EntryError `json:"errors"`
 }
+
+// EntryError represents a single entry-level error in a validation response.
+type EntryError struct {
+	Sequence  int64  `json:"sequence"`
+	TableName string `json:"table_name"`
+	EntityID  string `json:"entity_id"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+}
+
+// SchemaMismatchError represents a 409 response indicating schema version conflict.
+type SchemaMismatchError struct {
+	ClientVersion int    `json:"client_version"`
+	ServerVersion int    `json:"server_version"`
+	Detail        string `json:"detail"`
+}
+
 
 // Sync performs a full sync cycle: push pending, then pull updates.
 //
@@ -222,161 +229,21 @@ func truncate(s string, max int) string {
 	return s[:max] + "..."
 }
 
-// parseRFC3339 parses an RFC3339 timestamp string, returning the zero time
-// if the string is empty or malformed. This is intentional: delta sync entries
-// may have missing timestamps, and we prefer zero-value over errors.
-//
-// Examples:
-//
-//	parseRFC3339("2024-01-15T10:30:00Z") // returns parsed time.Time
-//	parseRFC3339("")                      // returns time.Time{} (zero value)
-//	parseRFC3339("invalid")               // returns time.Time{} (no error)
-func parseRFC3339(s string) time.Time {
-	if s == "" {
-		return time.Time{}
-	}
-	t, _ := time.Parse(time.RFC3339, s)
-	return t
-}
 
 // Pull fetches updates from Engram.
 //
-// Deprecated: Use SyncDelta() instead, which both fetches and applies delta
-// changes to the local store. Pull() only fetches but does not apply changes.
-// This method will be removed in v2.0.
-//
-// Requires prior Bootstrap() - returns error if last_sync metadata is not set.
+// Deprecated: Pull is a no-op. The legacy lore-based delta protocol was removed
+// in Story 10.1. Use the new change_log-based sync protocol (Epic 10) instead.
 func (s *Syncer) Pull(ctx context.Context) error {
-	// Require last_sync to prevent calling /delta without required since parameter
-	lastSync, err := s.store.GetMetadata("last_sync")
-	if err != nil {
-		return fmt.Errorf("pull: get last_sync: %w", err)
-	}
-	if lastSync == "" {
-		return fmt.Errorf("pull: no last_sync found (run 'recall sync bootstrap' first)")
-	}
-
-	apiURL := s.engramURL + s.deltaPath() + "?since=" + lastSync
-
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-	if err != nil {
-		return err
-	}
-	s.setHeaders(req)
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("pull failed: %s - %s", resp.Status, string(respBody))
-	}
-
-	var delta engramDeltaResponse
-	if err := json.NewDecoder(resp.Body).Decode(&delta); err != nil {
-		return err
-	}
-
-	// Pull() fetches delta but does not apply it to local store.
-	// This is intentional: Pull() is part of the legacy Sync() flow which
-	// only pushed data. For full delta synchronization, use SyncDelta()
-	// which both fetches and applies updates.
-	_ = delta // Response available for future use if needed
-
 	return nil
 }
 
 // SyncDelta fetches and applies incremental changes from Engram.
 //
-// Process:
-//  1. Check last_sync metadata (requires prior Bootstrap)
-//  2. Fetch delta from Engram using GET /api/v1/lore/delta?since={last_sync}
-//  3. Upsert new/updated lore entries to local store
-//  4. Delete entries matching deleted_ids
-//  5. Update last_sync metadata with AsOf timestamp
-//
-// Returns error if last_sync is empty (client must Bootstrap first).
+// Note: The legacy lore-based delta sync was removed in Story 10.1.
+// The new change_log-based delta sync will be implemented in a later story.
+// Until then, SyncDelta() is a no-op that returns nil.
 func (s *Syncer) SyncDelta(ctx context.Context) error {
-	// 1. Get last_sync - require prior bootstrap
-	lastSync, err := s.store.GetMetadata("last_sync")
-	if err != nil {
-		return fmt.Errorf("delta: get last_sync: %w", err)
-	}
-	if lastSync == "" {
-		return fmt.Errorf("delta: no last_sync found (run 'recall sync bootstrap' first)")
-	}
-
-	// 2. Fetch delta from Engram
-	apiURL := fmt.Sprintf("%s%s?since=%s", s.engramURL, s.deltaPath(), lastSync)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-	if err != nil {
-		return fmt.Errorf("delta: create request: %w", err)
-	}
-	s.setHeaders(req)
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("delta: fetch: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("delta: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
-	}
-
-	var delta engramDeltaResponse
-	if err := json.NewDecoder(resp.Body).Decode(&delta); err != nil {
-		return fmt.Errorf("delta: decode response: %w", err)
-	}
-
-	// 3. Upsert new/updated lore entries
-	for _, entry := range delta.Lore {
-		// Determine embedding status: use value from delta, default to "ready"
-		embeddingStatus := entry.EmbeddingStatus
-		if embeddingStatus == "" {
-			embeddingStatus = "ready" // Delta entries from Engram have embeddings
-		}
-
-		lore := &Lore{
-			ID:              entry.ID,
-			Content:         entry.Content,
-			Context:         entry.Context,
-			Category:        Category(entry.Category),
-			Confidence:      entry.Confidence,
-			ValidationCount: entry.ValidationCount,
-			Sources:         entry.Sources,
-			SourceID:        entry.SourceID,
-			EmbeddingStatus: embeddingStatus,
-		}
-
-		// Parse timestamps (zero values for empty/invalid strings)
-		lore.CreatedAt = parseRFC3339(entry.CreatedAt)
-		lore.UpdatedAt = parseRFC3339(entry.UpdatedAt)
-
-		if err := s.store.UpsertLore(lore); err != nil {
-			return fmt.Errorf("delta: upsert lore %s: %w", entry.ID, err)
-		}
-	}
-
-	// 4. Delete entries from deleted_ids
-	for _, id := range delta.DeletedIDs {
-		if err := s.store.DeleteLoreByID(id); err != nil {
-			return fmt.Errorf("delta: delete lore %s: %w", id, err)
-		}
-	}
-
-	// 5. Update last_sync with AsOf timestamp
-	if delta.AsOf != "" {
-		if err := s.store.SetMetadata("last_sync", delta.AsOf); err != nil {
-			return fmt.Errorf("delta: update last_sync: %w", err)
-		}
-	}
-
 	return nil
 }
 

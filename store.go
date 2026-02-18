@@ -1222,14 +1222,16 @@ func (s *Store) scanSnapshotLoreRows(rows *sql.Rows) (*Lore, error) {
 }
 
 // ChangeLogEntry represents a single row from the change_log table.
+// Used both as a store read model and as the wire format in SyncPushRequest.
+// Payload is json.RawMessage so it embeds as raw JSON in sync payloads.
 type ChangeLogEntry struct {
-	Sequence  int64   `json:"sequence"`
-	TableName string  `json:"table_name"`
-	EntityID  string  `json:"entity_id"`
-	Operation string  `json:"operation"`
-	Payload   *string `json:"payload"`
-	SourceID  string  `json:"source_id"`
-	CreatedAt string  `json:"created_at"`
+	Sequence  int64            `json:"sequence"`
+	TableName string           `json:"table_name"`
+	EntityID  string           `json:"entity_id"`
+	Operation string           `json:"operation"`
+	Payload   json.RawMessage  `json:"payload"`
+	SourceID  string           `json:"source_id"`
+	CreatedAt string           `json:"created_at"`
 }
 
 // UnpushedChanges returns change_log entries for a given sourceID after a given
@@ -1262,7 +1264,7 @@ func (s *Store) UnpushedChanges(sourceID string, afterSeq int64, limit int) ([]C
 			return nil, fmt.Errorf("store: scan change_log: %w", err)
 		}
 		if payload.Valid {
-			e.Payload = &payload.String
+			e.Payload = json.RawMessage(payload.String)
 		}
 		entries = append(entries, e)
 	}

@@ -16,6 +16,10 @@ import (
 
 // EngramClient abstracts HTTP communication with the Engram central service.
 // Implementations must be safe for concurrent use.
+//
+// Note: Legacy lore/feedback methods (PushLore, PushFeedback, GetDelta) were
+// removed in Story 10.1. The new sync protocol uses change_log-based push/delta
+// via /sync/* endpoints, defined in the recall package (SyncPushRequest, etc.).
 type EngramClient interface {
 	// HealthCheck validates connectivity and returns Engram metadata.
 	// Returns embedding model name for compatibility validation.
@@ -24,16 +28,6 @@ type EngramClient interface {
 	// DownloadSnapshot streams the full lore database snapshot.
 	// Caller must close the returned ReadCloser.
 	DownloadSnapshot(ctx context.Context) (io.ReadCloser, error)
-
-	// PushLore sends a batch of lore entries to Engram.
-	PushLore(ctx context.Context, req *PushLoreRequest) (*PushLoreResponse, error)
-
-	// PushFeedback sends a batch of feedback updates to Engram.
-	PushFeedback(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
-
-	// GetDelta retrieves lore changes since the given timestamp.
-	// Used for incremental sync after initial bootstrap.
-	GetDelta(ctx context.Context, since time.Time) (*DeltaResult, error)
 
 	// ListStores returns all available stores.
 	// If prefix is non-empty, filters stores by ID prefix.
@@ -48,19 +42,10 @@ type EngramClient interface {
 	// DeleteStore deletes a store on Engram. Requires confirm=true.
 	DeleteStore(ctx context.Context, storeID string) error
 
-	// Store-prefixed Lore Operations
-
-	// PushLoreToStore sends a batch of lore entries to a specific store.
-	PushLoreToStore(ctx context.Context, storeID string, req *PushLoreRequest) (*PushLoreResponse, error)
+	// Store-prefixed Operations
 
 	// DownloadSnapshotFromStore streams the lore snapshot for a specific store.
 	DownloadSnapshotFromStore(ctx context.Context, storeID string) (io.ReadCloser, error)
-
-	// GetDeltaFromStore retrieves lore changes for a specific store.
-	GetDeltaFromStore(ctx context.Context, storeID string, since time.Time) (*DeltaResult, error)
-
-	// PushFeedbackToStore sends feedback updates to a specific store.
-	PushFeedbackToStore(ctx context.Context, storeID string, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
 
 	// DeleteLoreFromStore deletes a specific lore entry from a store.
 	DeleteLoreFromStore(ctx context.Context, storeID, loreID string) error
@@ -173,102 +158,8 @@ func (c *HTTPClient) DownloadSnapshot(ctx context.Context) (io.ReadCloser, error
 	return resp.Body, nil
 }
 
-func (c *HTTPClient) PushLore(ctx context.Context, req *PushLoreRequest) (*PushLoreResponse, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_lore", Err: err}
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/lore", bytes.NewReader(body))
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_lore", Err: err}
-	}
-	c.setHeaders(httpReq)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_lore", Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, newSyncError("push_lore", resp.StatusCode, respBody)
-	}
-
-	var result PushLoreResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, &recall.SyncError{Operation: "push_lore", Err: err}
-	}
-
-	return &result, nil
-}
-
-func (c *HTTPClient) PushFeedback(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_feedback", Err: err}
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/lore/feedback", bytes.NewReader(body))
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_feedback", Err: err}
-	}
-	c.setHeaders(httpReq)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_feedback", Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, newSyncError("push_feedback", resp.StatusCode, respBody)
-	}
-
-	var result PushFeedbackResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, &recall.SyncError{Operation: "push_feedback", Err: err}
-	}
-
-	return &result, nil
-}
-
-func (c *HTTPClient) GetDelta(ctx context.Context, since time.Time) (*DeltaResult, error) {
-	url := fmt.Sprintf("%s/api/v1/lore/delta?since=%s", c.baseURL, since.Format(time.RFC3339))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "get_delta", Err: err}
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "get_delta", Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, newSyncError("get_delta", resp.StatusCode, respBody)
-	}
-
-	var result DeltaResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, &recall.SyncError{Operation: "get_delta", Err: err}
-	}
-
-	return &result, nil
-}
-
 func (c *HTTPClient) ListStores(ctx context.Context, prefix string) (*ListStoresResponse, error) {
 	url := c.baseURL + "/api/v1/stores"
-	// Note: prefix filtering would be done client-side as the API doesn't support prefix parameter
-	// based on the OpenAPI spec (it just returns all stores)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -393,41 +284,6 @@ func (c *HTTPClient) DeleteStore(ctx context.Context, storeID string) error {
 	return nil
 }
 
-func (c *HTTPClient) PushLoreToStore(ctx context.Context, storeID string, req *PushLoreRequest) (*PushLoreResponse, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_lore_to_store", Err: err}
-	}
-
-	encodedID := encodeStoreID(storeID)
-	reqURL := fmt.Sprintf("%s/api/v1/stores/%s/lore", c.baseURL, encodedID)
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_lore_to_store", Err: err}
-	}
-	c.setHeaders(httpReq)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_lore_to_store", Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, newSyncError("push_lore_to_store", resp.StatusCode, respBody)
-	}
-
-	var result PushLoreResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, &recall.SyncError{Operation: "push_lore_to_store", Err: err}
-	}
-
-	return &result, nil
-}
-
 func (c *HTTPClient) DownloadSnapshotFromStore(ctx context.Context, storeID string) (io.ReadCloser, error) {
 	encodedID := encodeStoreID(storeID)
 	reqURL := fmt.Sprintf("%s/api/v1/stores/%s/lore/snapshot", c.baseURL, encodedID)
@@ -450,70 +306,6 @@ func (c *HTTPClient) DownloadSnapshotFromStore(ctx context.Context, storeID stri
 	}
 
 	return resp.Body, nil
-}
-
-func (c *HTTPClient) GetDeltaFromStore(ctx context.Context, storeID string, since time.Time) (*DeltaResult, error) {
-	encodedID := encodeStoreID(storeID)
-	reqURL := fmt.Sprintf("%s/api/v1/stores/%s/lore/delta?since=%s", c.baseURL, encodedID, since.Format(time.RFC3339))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "get_delta_from_store", Err: err}
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "get_delta_from_store", Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, newSyncError("get_delta_from_store", resp.StatusCode, respBody)
-	}
-
-	var result DeltaResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, &recall.SyncError{Operation: "get_delta_from_store", Err: err}
-	}
-
-	return &result, nil
-}
-
-func (c *HTTPClient) PushFeedbackToStore(ctx context.Context, storeID string, req *PushFeedbackRequest) (*PushFeedbackResponse, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_feedback_to_store", Err: err}
-	}
-
-	encodedID := encodeStoreID(storeID)
-	reqURL := fmt.Sprintf("%s/api/v1/stores/%s/lore/feedback", c.baseURL, encodedID)
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_feedback_to_store", Err: err}
-	}
-	c.setHeaders(httpReq)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, &recall.SyncError{Operation: "push_feedback_to_store", Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, newSyncError("push_feedback_to_store", resp.StatusCode, respBody)
-	}
-
-	var result PushFeedbackResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, &recall.SyncError{Operation: "push_feedback_to_store", Err: err}
-	}
-
-	return &result, nil
 }
 
 func (c *HTTPClient) DeleteLoreFromStore(ctx context.Context, storeID, loreID string) error {

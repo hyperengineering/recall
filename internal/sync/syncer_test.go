@@ -13,20 +13,14 @@ import (
 
 // mockEngramClient implements EngramClient for testing.
 type mockEngramClient struct {
-	healthCheckFn              func(ctx context.Context) (*HealthResponse, error)
-	downloadSnapshotFn         func(ctx context.Context) (io.ReadCloser, error)
-	pushLoreFn                 func(ctx context.Context, req *PushLoreRequest) (*PushLoreResponse, error)
-	pushFeedbackFn             func(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
-	getDeltaFn                 func(ctx context.Context, since time.Time) (*DeltaResult, error)
-	listStoresFn               func(ctx context.Context, prefix string) (*ListStoresResponse, error)
-	getStoreInfoFn             func(ctx context.Context, storeID string) (*StoreInfoResponse, error)
-	createStoreFn              func(ctx context.Context, req *CreateStoreRequest) (*CreateStoreResponse, error)
-	deleteStoreFn              func(ctx context.Context, storeID string) error
-	pushLoreToStoreFn          func(ctx context.Context, storeID string, req *PushLoreRequest) (*PushLoreResponse, error)
+	healthCheckFn               func(ctx context.Context) (*HealthResponse, error)
+	downloadSnapshotFn          func(ctx context.Context) (io.ReadCloser, error)
+	listStoresFn                func(ctx context.Context, prefix string) (*ListStoresResponse, error)
+	getStoreInfoFn              func(ctx context.Context, storeID string) (*StoreInfoResponse, error)
+	createStoreFn               func(ctx context.Context, req *CreateStoreRequest) (*CreateStoreResponse, error)
+	deleteStoreFn               func(ctx context.Context, storeID string) error
 	downloadSnapshotFromStoreFn func(ctx context.Context, storeID string) (io.ReadCloser, error)
-	getDeltaFromStoreFn        func(ctx context.Context, storeID string, since time.Time) (*DeltaResult, error)
-	pushFeedbackToStoreFn      func(ctx context.Context, storeID string, req *PushFeedbackRequest) (*PushFeedbackResponse, error)
-	deleteLoreFromStoreFn      func(ctx context.Context, storeID, loreID string) error
+	deleteLoreFromStoreFn       func(ctx context.Context, storeID, loreID string) error
 }
 
 func (m *mockEngramClient) HealthCheck(ctx context.Context) (*HealthResponse, error) {
@@ -39,27 +33,6 @@ func (m *mockEngramClient) HealthCheck(ctx context.Context) (*HealthResponse, er
 func (m *mockEngramClient) DownloadSnapshot(ctx context.Context) (io.ReadCloser, error) {
 	if m.downloadSnapshotFn != nil {
 		return m.downloadSnapshotFn(ctx)
-	}
-	return nil, errors.New("not implemented")
-}
-
-func (m *mockEngramClient) PushLore(ctx context.Context, req *PushLoreRequest) (*PushLoreResponse, error) {
-	if m.pushLoreFn != nil {
-		return m.pushLoreFn(ctx, req)
-	}
-	return nil, errors.New("not implemented")
-}
-
-func (m *mockEngramClient) PushFeedback(ctx context.Context, req *PushFeedbackRequest) (*PushFeedbackResponse, error) {
-	if m.pushFeedbackFn != nil {
-		return m.pushFeedbackFn(ctx, req)
-	}
-	return nil, errors.New("not implemented")
-}
-
-func (m *mockEngramClient) GetDelta(ctx context.Context, since time.Time) (*DeltaResult, error) {
-	if m.getDeltaFn != nil {
-		return m.getDeltaFn(ctx, since)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -92,30 +65,9 @@ func (m *mockEngramClient) DeleteStore(ctx context.Context, storeID string) erro
 	return errors.New("not implemented")
 }
 
-func (m *mockEngramClient) PushLoreToStore(ctx context.Context, storeID string, req *PushLoreRequest) (*PushLoreResponse, error) {
-	if m.pushLoreToStoreFn != nil {
-		return m.pushLoreToStoreFn(ctx, storeID, req)
-	}
-	return nil, errors.New("not implemented")
-}
-
 func (m *mockEngramClient) DownloadSnapshotFromStore(ctx context.Context, storeID string) (io.ReadCloser, error) {
 	if m.downloadSnapshotFromStoreFn != nil {
 		return m.downloadSnapshotFromStoreFn(ctx, storeID)
-	}
-	return nil, errors.New("not implemented")
-}
-
-func (m *mockEngramClient) GetDeltaFromStore(ctx context.Context, storeID string, since time.Time) (*DeltaResult, error) {
-	if m.getDeltaFromStoreFn != nil {
-		return m.getDeltaFromStoreFn(ctx, storeID, since)
-	}
-	return nil, errors.New("not implemented")
-}
-
-func (m *mockEngramClient) PushFeedbackToStore(ctx context.Context, storeID string, req *PushFeedbackRequest) (*PushFeedbackResponse, error) {
-	if m.pushFeedbackToStoreFn != nil {
-		return m.pushFeedbackToStoreFn(ctx, storeID, req)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -129,12 +81,12 @@ func (m *mockEngramClient) DeleteLoreFromStore(ctx context.Context, storeID, lor
 
 // mockSyncStore implements SyncStore for testing.
 type mockSyncStore struct {
-	metadata          map[string]string
-	getMetadataErr    error
-	setMetadataErr    error
-	replaceErr        error
-	replaceCalled     bool
-	replaceData       []byte
+	metadata       map[string]string
+	getMetadataErr error
+	setMetadataErr error
+	replaceErr     error
+	replaceCalled  bool
+	replaceData    []byte
 }
 
 func newMockSyncStore() *mockSyncStore {
@@ -263,7 +215,6 @@ func TestSyncer_Bootstrap_ModelMismatch(t *testing.T) {
 
 func TestSyncer_Bootstrap_FirstTimeModel(t *testing.T) {
 	store := newMockSyncStore()
-	// No embedding_model set (first time)
 
 	client := &mockEngramClient{
 		healthCheckFn: func(ctx context.Context) (*HealthResponse, error) {
@@ -341,7 +292,6 @@ func TestSyncer_Bootstrap_ReplaceStoreFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "replace store") {
 		t.Errorf("error = %q, want to contain 'replace store'", err.Error())
 	}
-	// Metadata should not be updated on failure
 	if store.metadata["embedding_model"] != "" {
 		t.Error("embedding_model should not be set when replace fails")
 	}
@@ -349,7 +299,7 @@ func TestSyncer_Bootstrap_ReplaceStoreFails(t *testing.T) {
 
 func TestSyncer_Bootstrap_OfflineMode(t *testing.T) {
 	store := newMockSyncStore()
-	syncer := NewSyncer(store, nil) // nil client = offline mode
+	syncer := NewSyncer(store, nil)
 
 	err := syncer.Bootstrap(context.Background())
 
@@ -365,7 +315,6 @@ func TestSyncer_Bootstrap_ContextCancellation(t *testing.T) {
 	store := newMockSyncStore()
 	client := &mockEngramClient{
 		healthCheckFn: func(ctx context.Context) (*HealthResponse, error) {
-			// Check if context is cancelled
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -377,17 +326,15 @@ func TestSyncer_Bootstrap_ContextCancellation(t *testing.T) {
 
 	syncer := NewSyncer(store, client)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
+	cancel()
 
 	err := syncer.Bootstrap(ctx)
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	// The error should be wrapped but ultimately caused by context cancellation
 	if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "cancel") {
 		t.Logf("got error: %v", err)
-		// This is acceptable as the implementation may wrap the error
 	}
 }
 
