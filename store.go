@@ -1,6 +1,7 @@
 package recall
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -17,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = "1"
+const schemaVersion = "2"
 
 // Store manages the local SQLite lore database.
 type Store struct {
@@ -65,11 +66,58 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("store: run migrations: %w", err)
 	}
 
-	// Set schema version if not set
+	// Upsert schema version so existing databases get updated
 	_, err := s.db.Exec(`
-		INSERT OR IGNORE INTO metadata (key, value) VALUES ('schema_version', ?)
+		INSERT INTO metadata (key, value) VALUES ('schema_version', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
 	`, schemaVersion)
-	return err
+	if err != nil {
+		return err
+	}
+
+	return s.initSyncMeta()
+}
+
+// initSyncMeta initializes client-specific sync_meta keys if not already present.
+// Generates a UUIDv4 source_id that persists across restarts.
+func (s *Store) initSyncMeta() error {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM sync_meta WHERE key = 'source_id'").Scan(&count)
+	if err != nil {
+		return fmt.Errorf("store: check source_id: %w", err)
+	}
+	if count > 0 {
+		return nil // Already initialized
+	}
+
+	sourceID, err := generateUUIDv4()
+	if err != nil {
+		return fmt.Errorf("store: generate source_id: %w", err)
+	}
+
+	_, err = s.db.Exec(`
+		INSERT OR IGNORE INTO sync_meta (key, value) VALUES
+		('source_id', ?),
+		('last_push_seq', '0'),
+		('last_pull_seq', '0')
+	`, sourceID)
+	if err != nil {
+		return fmt.Errorf("store: init sync meta: %w", err)
+	}
+
+	return nil
+}
+
+// generateUUIDv4 generates a random UUIDv4 string.
+func generateUUIDv4() (string, error) {
+	var uuid [16]byte
+	if _, err := rand.Read(uuid[:]); err != nil {
+		return "", fmt.Errorf("generate uuid: %w", err)
+	}
+	uuid[6] = (uuid[6] & 0x0f) | 0x40 // version 4
+	uuid[8] = (uuid[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x",
+		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
 }
 
 // InsertLore atomically inserts a lore entry and a sync queue entry in one transaction.
