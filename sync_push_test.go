@@ -62,7 +62,7 @@ func TestSyncPush_EmptyChangeLog(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncPush(context.Background())
+	_, err := syncer.SyncPush(context.Background())
 	if err != nil {
 		t.Fatalf("SyncPush with empty change_log should return nil: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestSyncPush_Success(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncPush(context.Background())
+	_, err := syncer.SyncPush(context.Background())
 	if err != nil {
 		t.Fatalf("SyncPush failed: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestSyncPush_PushIDIsUUID(t *testing.T) {
 	defer server.Close()
 
 	syncer := newTestSyncer(t, store, server.URL)
-	syncer.SyncPush(context.Background())
+	_, _ = syncer.SyncPush(context.Background())
 
 	// UUID format: 8-4-4-4-12 hex chars
 	parts := strings.Split(pushID, "-")
@@ -219,7 +219,7 @@ func TestSyncPush_BatchContinuation(t *testing.T) {
 	// the loop behavior. With 5 entries and default batch size 1000,
 	// we get 1 push. To test batching, we need to verify the loop logic
 	// by checking the implementation handles multiple batches correctly.
-	err := syncer.SyncPush(context.Background())
+	_, err := syncer.SyncPush(context.Background())
 	if err != nil {
 		t.Fatalf("SyncPush failed: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestSyncPush_IdempotentReplay(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncPush(context.Background())
+	_, err := syncer.SyncPush(context.Background())
 	if err != nil {
 		t.Fatalf("SyncPush with idempotent replay should succeed: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestSyncPush_RetryWithSamePushID(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncPush(context.Background())
+	_, err := syncer.SyncPush(context.Background())
 	if err != nil {
 		t.Fatalf("SyncPush should eventually succeed: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestSyncPush_ValidationError(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncPush(context.Background())
+	_, err := syncer.SyncPush(context.Background())
 	if err == nil {
 		t.Fatal("SyncPush should return error on 422")
 	}
@@ -380,7 +380,7 @@ func TestSyncPush_SchemaMismatch(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncPush(context.Background())
+	_, err := syncer.SyncPush(context.Background())
 	if err == nil {
 		t.Fatal("SyncPush should return error on 409")
 	}
@@ -469,7 +469,7 @@ func TestSyncPush_SetsHeaders(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	syncer.SyncPush(context.Background())
+	_, _ = syncer.SyncPush(context.Background())
 
 	if receivedAuth != "Bearer test-api-key" {
 		t.Errorf("Authorization = %q, want %q", receivedAuth, "Bearer test-api-key")
@@ -482,6 +482,61 @@ func TestSyncPush_SetsHeaders(t *testing.T) {
 	}
 	if receivedCT != "application/json" {
 		t.Errorf("Content-Type = %q, want %q", receivedCT, "application/json")
+	}
+}
+
+// =============================================================================
+// Story 10.5 AC #3: SyncPush returns count of entries pushed
+// =============================================================================
+
+func TestSyncPush_ReturnsEntriesPushedCount(t *testing.T) {
+	store := newTestStore(t)
+	insertTestChangeLogEntries(t, store, 5)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req SyncPushRequest
+		json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SyncPushResponse{Accepted: len(req.Entries)})
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(t, store, server.URL)
+
+	result, err := syncer.SyncPush(context.Background())
+	if err != nil {
+		t.Fatalf("SyncPush failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("SyncPush result should not be nil")
+	}
+	if result.EntriesPushed != 5 {
+		t.Errorf("EntriesPushed = %d, want 5", result.EntriesPushed)
+	}
+}
+
+func TestSyncPush_EmptyChangeLog_ReturnsZeroCount(t *testing.T) {
+	store := newTestStore(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not make HTTP calls")
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(t, store, server.URL)
+
+	result, err := syncer.SyncPush(context.Background())
+	if err != nil {
+		t.Fatalf("SyncPush failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("SyncPush result should not be nil even when nothing to push")
+	}
+	if result.EntriesPushed != 0 {
+		t.Errorf("EntriesPushed = %d, want 0", result.EntriesPushed)
 	}
 }
 
@@ -539,7 +594,7 @@ func TestSyncPush_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	err := syncer.SyncPush(ctx)
+	_, err := syncer.SyncPush(ctx)
 	if err == nil {
 		t.Fatal("SyncPush should return error on cancelled context")
 	}
@@ -556,7 +611,7 @@ func TestSyncPush_EmptyChangeLog_NoStoreID(t *testing.T) {
 	// (no entries means no need to push, so storeID isn't checked)
 	syncer := NewSyncer(store, "http://unused", "key", "")
 
-	err := syncer.SyncPush(context.Background())
+	_, err := syncer.SyncPush(context.Background())
 	if err != nil {
 		t.Fatalf("SyncPush with empty change_log should not fail: %v", err)
 	}
@@ -594,7 +649,7 @@ func TestSyncPush_ResumeFromLastPushSeq(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncPush(context.Background())
+	_, err := syncer.SyncPush(context.Background())
 	if err != nil {
 		t.Fatalf("SyncPush failed: %v", err)
 	}
@@ -634,5 +689,5 @@ func TestSyncPush_RequiresStoreID(t *testing.T) {
 			t.Error("SyncPush should panic when storeID is empty")
 		}
 	}()
-	_ = syncer.SyncPush(context.Background())
+	_, _ = syncer.SyncPush(context.Background())
 }

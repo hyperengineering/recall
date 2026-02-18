@@ -71,6 +71,116 @@ func TestSyncer_Flush_EmptyChangeLog(t *testing.T) {
 }
 
 // ============================================================================
+// Story 10.5: Full Sync Cycle (push-first-then-pull)
+// ============================================================================
+
+// TestSync_PushFailure_PullStillExecutes verifies AC #1 and #2:
+// Sync() calls SyncPush() first, followed by SyncDelta().
+// Push failure is logged but pull still executes.
+func TestSync_PushFailure_PullStillExecutes(t *testing.T) {
+	store := newTestStore(t)
+
+	// Set up sync_meta so SyncDelta can work
+	if err := store.SetSyncMeta("last_pull_seq", "0"); err != nil {
+		t.Fatalf("SetSyncMeta failed: %v", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	pushCalled := false
+	deltaCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/sync/push") {
+			pushCalled = true
+			// Push fails with 422 (non-retryable validation error)
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(SyncValidationError{
+				Accepted: 0,
+				Errors:   []EntryError{{Sequence: 1, Code: "test", Message: "test error"}},
+			})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/sync/delta") {
+			deltaCalled = true
+			// Delta succeeds with empty response
+			json.NewEncoder(w).Encode(SyncDeltaResponse{
+				Entries:        []DeltaEntry{},
+				LastSequence:   0,
+				LatestSequence: 0,
+				HasMore:        false,
+			})
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(t, store, server.URL)
+	ctx := context.Background()
+
+	// Insert a change_log entry so push has something to attempt
+	lore := &Lore{
+		ID: "01SYNC_PUSH_FAIL_TEST00001", Content: "push fail test",
+		Category: CategoryArchitecturalDecision, Confidence: 0.5,
+		EmbeddingStatus: "pending", SourceID: "test-source",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := store.InsertLore(lore); err != nil {
+		t.Fatalf("InsertLore failed: %v", err)
+	}
+	_ = now
+
+	err := syncer.Sync(ctx)
+
+	// Sync should NOT return push error — pull result is what matters
+	if err != nil {
+		t.Fatalf("Sync() returned error: %v (expected nil since pull succeeded)", err)
+	}
+
+	if !pushCalled {
+		t.Error("push was not called — Sync should attempt push first")
+	}
+	if !deltaCalled {
+		t.Error("delta was not called — Sync should continue to pull even after push failure")
+	}
+}
+
+// TestSync_PullFailure_ReturnsError verifies that pull failure is returned.
+func TestSync_PullFailure_ReturnsError(t *testing.T) {
+	store := newTestStore(t)
+
+	if err := store.SetSyncMeta("last_pull_seq", "0"); err != nil {
+		t.Fatalf("SetSyncMeta failed: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/sync/push") {
+			// Push succeeds (empty change_log, no-op)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/sync/delta") {
+			// Pull fails
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("internal error"))
+			return
+		}
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(t, store, server.URL)
+
+	ctx := context.Background()
+	err := syncer.Sync(ctx)
+
+	if err == nil {
+		t.Fatal("Sync() should return error when pull fails")
+	}
+	if !strings.Contains(err.Error(), "pull") {
+		t.Errorf("error should mention pull, got: %v", err)
+	}
+}
+
+// ============================================================================
 // Story 10.3: Paginated Delta Pull with Source Filtering
 // ============================================================================
 
@@ -101,6 +211,61 @@ func makeDeltaPayload(id, content, category, sourceID, createdAt, updatedAt stri
 	}
 	b, _ := json.Marshal(p)
 	return b
+}
+
+// TestSyncDelta_ReturnsResult verifies SyncDelta returns applied/skipped/sequence info.
+// Story 10.5 AC #4
+func TestSyncDelta_ReturnsResult(t *testing.T) {
+	store := newTestStore(t)
+
+	if err := store.SetSyncMeta("last_pull_seq", "0"); err != nil {
+		t.Fatalf("SetSyncMeta failed: %v", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	ownSourceID := store.SourceID()
+
+	entries := []DeltaEntry{
+		{Sequence: 1, TableName: "lore_entries", EntityID: "e1", Operation: "upsert",
+			Payload: makeDeltaPayload("e1", "remote content 1", "lesson_learned", "remote-source", now, now),
+			SourceID: "remote-source", CreatedAt: now, ReceivedAt: now},
+		{Sequence: 2, TableName: "lore_entries", EntityID: "e2", Operation: "upsert",
+			Payload: makeDeltaPayload("e2", "own content", "lesson_learned", ownSourceID, now, now),
+			SourceID: ownSourceID, CreatedAt: now, ReceivedAt: now},
+		{Sequence: 3, TableName: "lore_entries", EntityID: "e3", Operation: "upsert",
+			Payload: makeDeltaPayload("e3", "remote content 2", "lesson_learned", "other-source", now, now),
+			SourceID: "other-source", CreatedAt: now, ReceivedAt: now},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(SyncDeltaResponse{
+			Entries:        entries,
+			LastSequence:   3,
+			LatestSequence: 3,
+			HasMore:        false,
+		})
+	}))
+	defer server.Close()
+
+	syncer := newTestSyncer(t, store, server.URL)
+
+	result, err := syncer.SyncDelta(context.Background())
+	if err != nil {
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("result should not be nil")
+	}
+	if result.EntriesApplied != 2 {
+		t.Errorf("EntriesApplied = %d, want 2", result.EntriesApplied)
+	}
+	if result.EntriesSkipped != 1 {
+		t.Errorf("EntriesSkipped = %d, want 1", result.EntriesSkipped)
+	}
+	if result.LastSequence != 3 {
+		t.Errorf("LastSequence = %d, want 3", result.LastSequence)
+	}
 }
 
 // TestSyncDelta_SuccessfulPull verifies SyncDelta applies upsert entries to local store.
@@ -151,7 +316,7 @@ func TestSyncDelta_SuccessfulPull(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncDelta(context.Background())
+	_, err := syncer.SyncDelta(context.Background())
 	if err != nil {
 		t.Fatalf("SyncDelta failed: %v", err)
 	}
@@ -226,7 +391,7 @@ func TestSyncDelta_SourceFiltering(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncDelta(context.Background())
+	_, err := syncer.SyncDelta(context.Background())
 	if err != nil {
 		t.Fatalf("SyncDelta failed: %v", err)
 	}
@@ -306,7 +471,7 @@ func TestSyncDelta_Pagination(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncDelta(context.Background())
+	_, err := syncer.SyncDelta(context.Background())
 	if err != nil {
 		t.Fatalf("SyncDelta failed: %v", err)
 	}
@@ -364,7 +529,7 @@ func TestSyncDelta_Upsert(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncDelta(context.Background())
+	_, err := syncer.SyncDelta(context.Background())
 	if err != nil {
 		t.Fatalf("SyncDelta failed: %v", err)
 	}
@@ -438,7 +603,7 @@ func TestSyncDelta_Delete(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncDelta(context.Background())
+	_, err := syncer.SyncDelta(context.Background())
 	if err != nil {
 		t.Fatalf("SyncDelta failed: %v", err)
 	}
@@ -494,7 +659,7 @@ func TestSyncDelta_LastPullSeqUpdated(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncDelta(context.Background())
+	_, err := syncer.SyncDelta(context.Background())
 	if err != nil {
 		t.Fatalf("SyncDelta failed: %v", err)
 	}
@@ -529,7 +694,7 @@ func TestSyncDelta_FromSequenceZero(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncDelta(context.Background())
+	_, err := syncer.SyncDelta(context.Background())
 	if err != nil {
 		t.Fatalf("SyncDelta failed: %v", err)
 	}
@@ -547,7 +712,7 @@ func TestSyncDelta_OfflineMode(t *testing.T) {
 	syncer := NewSyncer(store, "", "test-key", "test-source") // empty URL = offline
 	syncer.SetStoreID("test-store")
 
-	err := syncer.SyncDelta(context.Background())
+	_, err := syncer.SyncDelta(context.Background())
 	if !errors.Is(err, ErrOffline) {
 		t.Errorf("SyncDelta with empty URL should return ErrOffline, got %v", err)
 	}
@@ -570,7 +735,7 @@ func TestSyncDelta_NoChangesFromServer(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncDelta(context.Background())
+	_, err := syncer.SyncDelta(context.Background())
 	if err != nil {
 		t.Fatalf("SyncDelta should succeed with no changes: %v", err)
 	}
@@ -609,7 +774,7 @@ func TestSyncDelta_DoesNotWriteChangeLog(t *testing.T) {
 
 	syncer := newTestSyncer(t, store, server.URL)
 
-	err := syncer.SyncDelta(context.Background())
+	_, err := syncer.SyncDelta(context.Background())
 	if err != nil {
 		t.Fatalf("SyncDelta failed: %v", err)
 	}

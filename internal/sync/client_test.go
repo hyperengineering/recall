@@ -710,3 +710,134 @@ func TestHTTPClient_DeleteLoreFromStore_Success(t *testing.T) {
 		t.Errorf("path = %q, want %q", receivedPath, "/api/v1/stores/my-store/lore/01ARZ3NDEKTSV4RRFFQ69G5FAV")
 	}
 }
+
+// =============================================================================
+// Story 10.5: Sync Protocol HTTP Methods
+// =============================================================================
+
+func TestHTTPClient_SyncPush_Success(t *testing.T) {
+	var receivedPath, receivedMethod string
+	var receivedReq recall.SyncPushRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedMethod = r.Method
+
+		json.NewDecoder(r.Body).Decode(&receivedReq)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(recall.SyncPushResponse{Accepted: 2, RemoteSequence: 100})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "test-source")
+	req := &recall.SyncPushRequest{
+		PushID:        "test-push-id",
+		SourceID:      "test-source",
+		SchemaVersion: 2,
+		Entries:       []recall.ChangeLogEntry{{Sequence: 1, TableName: "lore_entries", EntityID: "e1", Operation: "upsert"}},
+	}
+
+	resp, err := client.SyncPush(context.Background(), "my-store", req)
+	if err != nil {
+		t.Fatalf("SyncPush failed: %v", err)
+	}
+
+	if receivedMethod != "POST" {
+		t.Errorf("method = %q, want POST", receivedMethod)
+	}
+	if receivedPath != "/api/v1/stores/my-store/sync/push" {
+		t.Errorf("path = %q, want /api/v1/stores/my-store/sync/push", receivedPath)
+	}
+	if receivedReq.PushID != "test-push-id" {
+		t.Errorf("push_id = %q, want test-push-id", receivedReq.PushID)
+	}
+	if resp.Accepted != 2 {
+		t.Errorf("accepted = %d, want 2", resp.Accepted)
+	}
+}
+
+func TestHTTPClient_SyncDelta_Success(t *testing.T) {
+	var receivedPath, receivedMethod string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.RequestURI()
+		receivedMethod = r.Method
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(recall.SyncDeltaResponse{
+			Entries:        []recall.DeltaEntry{},
+			LastSequence:   42,
+			LatestSequence: 42,
+			HasMore:        false,
+		})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "test-source")
+
+	resp, err := client.SyncDelta(context.Background(), "my-store", 10, 500)
+	if err != nil {
+		t.Fatalf("SyncDelta failed: %v", err)
+	}
+
+	if receivedMethod != "GET" {
+		t.Errorf("method = %q, want GET", receivedMethod)
+	}
+	expectedPath := "/api/v1/stores/my-store/sync/delta?after=10&limit=500"
+	if receivedPath != expectedPath {
+		t.Errorf("path = %q, want %q", receivedPath, expectedPath)
+	}
+	if resp.LastSequence != 42 {
+		t.Errorf("last_sequence = %d, want 42", resp.LastSequence)
+	}
+}
+
+func TestHTTPClient_SyncSnapshot_Success(t *testing.T) {
+	var receivedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write([]byte("snapshot-data"))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "test-source")
+
+	body, err := client.SyncSnapshot(context.Background(), "my-store")
+	if err != nil {
+		t.Fatalf("SyncSnapshot failed: %v", err)
+	}
+	defer body.Close()
+
+	data, _ := io.ReadAll(body)
+
+	if receivedPath != "/api/v1/stores/my-store/sync/snapshot" {
+		t.Errorf("path = %q, want /api/v1/stores/my-store/sync/snapshot", receivedPath)
+	}
+	if string(data) != "snapshot-data" {
+		t.Errorf("body = %q, want snapshot-data", string(data))
+	}
+}
+
+func TestHTTPClient_SyncPush_StoreIDEncoding(t *testing.T) {
+	var receivedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.RawPath
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(recall.SyncPushResponse{Accepted: 0})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "test-api-key", "")
+	_, err := client.SyncPush(context.Background(), "org/store", &recall.SyncPushRequest{})
+	if err != nil {
+		t.Fatalf("SyncPush failed: %v", err)
+	}
+
+	if receivedPath != "/api/v1/stores/org%2Fstore/sync/push" {
+		t.Errorf("path = %q, want /api/v1/stores/org%%2Fstore/sync/push", receivedPath)
+	}
+}

@@ -140,14 +140,15 @@ func runSyncPush(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	statsBefore, _ := client.Stats()
-
+	var pushResult *recall.PushResult
 	var syncErr error
 	start := time.Now()
 
 	out := cmd.OutOrStdout()
 	syncErr = runWithSpinner(out, "Pushing to Engram", func() error {
-		return client.SyncPush(ctx)
+		var err error
+		pushResult, err = client.SyncPush(ctx)
+		return err
 	})
 
 	duration := time.Since(start)
@@ -156,9 +157,7 @@ func runSyncPush(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("push: %w", syncErr)
 	}
 
-	statsAfter, _ := client.Stats()
-
-	return outputSyncPush(cmd, statsBefore, statsAfter, duration)
+	return outputSyncPush(cmd, pushResult, duration)
 }
 
 func runSyncBootstrap(cmd *cobra.Command, args []string) error {
@@ -342,14 +341,15 @@ func runSyncDelta(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	statsBefore, _ := client.Stats()
-
+	var deltaResult *recall.DeltaResult
 	var deltaErr error
 	start := time.Now()
 
 	out := cmd.OutOrStdout()
 	deltaErr = runWithSpinner(out, "Syncing delta from Engram", func() error {
-		return client.SyncDelta(ctx)
+		var err error
+		deltaResult, err = client.SyncDelta(ctx)
+		return err
 	})
 
 	duration := time.Since(start)
@@ -358,7 +358,5 @@ func runSyncDelta(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("delta sync: %w", deltaErr)
 	}
 
-	statsAfter, _ := client.Stats()
-
-	return outputSyncDelta(cmd, statsBefore, statsAfter, duration)
+	return outputSyncDelta(cmd, deltaResult, duration)
 }

@@ -17,19 +17,6 @@ type SyncStore interface {
 
 	// Bootstrap operations
 	ReplaceFromSnapshot(r io.Reader) error
-
-	// Push operations (for Story 4.3)
-	Unsynced() ([]recall.Lore, error)
-	MarkSynced(ids []string, syncedAt time.Time) error
-	PendingFeedback() ([]FeedbackEntry, error)
-	MarkFeedbackSynced(ids []int64) error
-}
-
-// FeedbackEntry represents a pending feedback item in the sync queue.
-type FeedbackEntry struct {
-	ID      int64
-	LoreID  string
-	Outcome string
 }
 
 // Syncer orchestrates synchronization with Engram using dependency injection.

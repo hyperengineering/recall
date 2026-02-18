@@ -364,11 +364,12 @@ func (c *Client) Sync(ctx context.Context) error {
 }
 
 // SyncPush pushes pending lore to Engram.
-func (c *Client) SyncPush(ctx context.Context) error {
+// Returns a PushResult with the count of entries pushed.
+func (c *Client) SyncPush(ctx context.Context) (*PushResult, error) {
 	if c.syncer == nil {
-		return ErrOffline
+		return nil, ErrOffline
 	}
-	return c.syncer.Push(ctx)
+	return c.syncer.SyncPush(ctx)
 }
 
 // SyncPull pulls updates from Engram.
@@ -377,7 +378,8 @@ func (c *Client) SyncPull(ctx context.Context) error {
 	if c.syncer == nil {
 		return ErrOffline
 	}
-	return c.syncer.SyncDelta(ctx)
+	_, err := c.syncer.SyncDelta(ctx)
+	return err
 }
 
 // SyncDelta fetches and applies incremental changes from Engram.
@@ -385,11 +387,11 @@ func (c *Client) SyncPull(ctx context.Context) error {
 // This performs an efficient delta sync, fetching only changes since the last
 // sync rather than downloading the full database. Requires prior Bootstrap.
 //
+// Returns a DeltaResult with entries applied, skipped, and current sequence.
 // Returns ErrOffline if Engram is not configured.
-// Returns error if Bootstrap has not been run (no last_sync timestamp).
-func (c *Client) SyncDelta(ctx context.Context) error {
+func (c *Client) SyncDelta(ctx context.Context) (*DeltaResult, error) {
 	if c.syncer == nil {
-		return ErrOffline
+		return nil, ErrOffline
 	}
 	return c.syncer.SyncDelta(ctx)
 }

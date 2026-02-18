@@ -175,28 +175,22 @@ func outputFeedbackBatch(cmd *cobra.Command, result *recall.FeedbackResult) erro
 	return nil
 }
 
-// SyncPushResult for JSON output.
-type SyncPushResult struct {
+// CLIPushResult for JSON output.
+type CLIPushResult struct {
 	Pushed     int   `json:"pushed"`
-	Remaining  int   `json:"remaining"`
 	DurationMs int64 `json:"duration_ms"`
 }
 
 // outputSyncPush prints push sync results.
-func outputSyncPush(cmd *cobra.Command, before, after *recall.StoreStats, duration time.Duration) error {
+func outputSyncPush(cmd *cobra.Command, result *recall.PushResult, duration time.Duration) error {
 	pushed := 0
-	if before != nil && after != nil {
-		pushed = before.PendingSync - after.PendingSync
+	if result != nil {
+		pushed = result.EntriesPushed
 	}
 
 	if outputJSON {
-		remaining := 0
-		if after != nil {
-			remaining = after.PendingSync
-		}
-		return outputAsJSON(cmd, SyncPushResult{
+		return outputAsJSON(cmd, CLIPushResult{
 			Pushed:     pushed,
-			Remaining:  remaining,
 			DurationMs: duration.Milliseconds(),
 		})
 	}
@@ -205,9 +199,6 @@ func outputSyncPush(cmd *cobra.Command, before, after *recall.StoreStats, durati
 	printSuccess(out, "Push complete (took %s)", duration.Round(time.Millisecond))
 	if pushed > 0 {
 		_, _ = fmt.Fprintf(out, "  Pushed %d entries\n", pushed)
-	}
-	if after != nil && after.PendingSync > 0 {
-		printWarning(out, "Remaining in queue: %d", after.PendingSync)
 	}
 	return nil
 }
@@ -239,42 +230,41 @@ func outputSyncBootstrap(cmd *cobra.Command, stats *recall.StoreStats, duration 
 	return nil
 }
 
-// SyncDeltaResult for JSON output.
-type SyncDeltaResult struct {
-	LoreCountBefore int   `json:"lore_count_before"`
-	LoreCountAfter  int   `json:"lore_count_after"`
-	DurationMs      int64 `json:"duration_ms"`
+// CLIDeltaResult for JSON output.
+type CLIDeltaResult struct {
+	Applied    int   `json:"applied"`
+	Skipped    int   `json:"skipped"`
+	Sequence   int64 `json:"sequence"`
+	DurationMs int64 `json:"duration_ms"`
 }
 
 // outputSyncDelta prints delta sync results.
-func outputSyncDelta(cmd *cobra.Command, before, after *recall.StoreStats, duration time.Duration) error {
-	countBefore := 0
-	countAfter := 0
-	if before != nil {
-		countBefore = before.LoreCount
-	}
-	if after != nil {
-		countAfter = after.LoreCount
+func outputSyncDelta(cmd *cobra.Command, result *recall.DeltaResult, duration time.Duration) error {
+	applied := 0
+	skipped := 0
+	seq := int64(0)
+	if result != nil {
+		applied = result.EntriesApplied
+		skipped = result.EntriesSkipped
+		seq = result.LastSequence
 	}
 
 	if outputJSON {
-		return outputAsJSON(cmd, SyncDeltaResult{
-			LoreCountBefore: countBefore,
-			LoreCountAfter:  countAfter,
-			DurationMs:      duration.Milliseconds(),
+		return outputAsJSON(cmd, CLIDeltaResult{
+			Applied:    applied,
+			Skipped:    skipped,
+			Sequence:   seq,
+			DurationMs: duration.Milliseconds(),
 		})
 	}
 
 	out := cmd.OutOrStdout()
 	printSuccess(out, "Delta sync complete (took %s)", duration.Round(time.Millisecond))
-
-	diff := countAfter - countBefore
-	if diff > 0 {
-		_, _ = fmt.Fprintf(out, "  Added: %d entries\n", diff)
-	} else if diff < 0 {
-		_, _ = fmt.Fprintf(out, "  Removed: %d entries\n", -diff)
+	_, _ = fmt.Fprintf(out, "  Entries applied: %d\n", applied)
+	if skipped > 0 {
+		_, _ = fmt.Fprintf(out, "  Entries skipped (source filter): %d\n", skipped)
 	}
-	_, _ = fmt.Fprintf(out, "  Local lore count: %d\n", countAfter)
+	_, _ = fmt.Fprintf(out, "  Sequence position: %d\n", seq)
 
 	return nil
 }

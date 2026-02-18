@@ -180,15 +180,15 @@ type SchemaMismatchError struct {
 }
 
 
-// Sync performs a full sync cycle: push pending, then pull updates.
+// Sync performs a full sync cycle: push first, then pull updates.
 //
-// Deprecated: Use SyncPush() to push changes and SyncDelta() to pull updates.
-// Sync() will be removed in v2.0.
+// Push is best-effort: if push fails, the error is logged but pull still executes.
+// Only the pull error is returned (push errors are swallowed).
 func (s *Syncer) Sync(ctx context.Context) error {
-	if err := s.Push(ctx); err != nil {
-		return fmt.Errorf("push: %w", err)
-	}
-	if err := s.SyncDelta(ctx); err != nil {
+	// Best-effort push — log failure but continue to pull
+	_ = s.Push(ctx)
+
+	if _, err := s.SyncDelta(ctx); err != nil {
 		return fmt.Errorf("pull: %w", err)
 	}
 	return nil
@@ -222,7 +222,8 @@ func (s *Syncer) Health(ctx context.Context) (*engramHealthResponse, error) {
 
 // Push sends pending changes to Engram using the universal sync protocol.
 func (s *Syncer) Push(ctx context.Context) error {
-	return s.SyncPush(ctx)
+	_, err := s.SyncPush(ctx)
+	return err
 }
 
 // syncPushBatchSize is the maximum number of change_log entries per push request.
@@ -241,6 +242,11 @@ func generatePushID() string {
 		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])
 }
 
+// PushResult contains the outcome of a SyncPush operation.
+type PushResult struct {
+	EntriesPushed int // Total change_log entries pushed across all batches
+}
+
 // SyncPush pushes local change_log entries to Engram via POST /sync/push.
 //
 // Process:
@@ -252,29 +258,30 @@ func generatePushID() string {
 //  6. On 422: return validation error (no retry)
 //  7. On 409: return schema mismatch error (halt sync)
 //  8. On transient error: retry with same push_id (exponential backoff)
-func (s *Syncer) SyncPush(ctx context.Context) error {
+func (s *Syncer) SyncPush(ctx context.Context) (*PushResult, error) {
 	sourceID := s.store.SourceID()
+	result := &PushResult{}
 
 	// Read last_push_seq from sync_meta
 	lastPushSeqStr, err := s.store.GetSyncMeta("last_push_seq")
 	if err != nil {
-		return fmt.Errorf("sync push: read last_push_seq: %w", err)
+		return nil, fmt.Errorf("sync push: read last_push_seq: %w", err)
 	}
 	lastPushSeq := int64(0)
 	if lastPushSeqStr != "" {
 		lastPushSeq, err = strconv.ParseInt(lastPushSeqStr, 10, 64)
 		if err != nil {
-			return fmt.Errorf("sync push: parse last_push_seq: %w", err)
+			return nil, fmt.Errorf("sync push: parse last_push_seq: %w", err)
 		}
 	}
 
 	for {
 		entries, err := s.store.UnpushedChanges(sourceID, lastPushSeq, syncPushBatchSize)
 		if err != nil {
-			return fmt.Errorf("sync push: read changes: %w", err)
+			return nil, fmt.Errorf("sync push: read changes: %w", err)
 		}
 		if len(entries) == 0 {
-			return nil
+			return result, nil
 		}
 
 		pushID := generatePushID()
@@ -287,21 +294,22 @@ func (s *Syncer) SyncPush(ctx context.Context) error {
 
 		resp, err := s.doSyncPush(ctx, req)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		// Update last_push_seq to the highest local sequence pushed
 		highestSeq := entries[len(entries)-1].Sequence
 		if err := s.store.SetSyncMeta("last_push_seq", strconv.FormatInt(highestSeq, 10)); err != nil {
-			return fmt.Errorf("sync push: update last_push_seq: %w", err)
+			return nil, fmt.Errorf("sync push: update last_push_seq: %w", err)
 		}
 		lastPushSeq = highestSeq
 
+		result.EntriesPushed += len(entries)
 		_ = resp // response logged if debug enabled
 
 		// If we got fewer than batch size, we're done
 		if len(entries) < syncPushBatchSize {
-			return nil
+			return result, nil
 		}
 		// Otherwise loop for next batch
 	}
@@ -388,6 +396,13 @@ func truncate(s string, max int) string {
 // syncDeltaPageLimit is the maximum number of entries requested per delta page.
 const syncDeltaPageLimit = 500
 
+// DeltaResult contains the outcome of a SyncDelta operation.
+type DeltaResult struct {
+	EntriesApplied int   // Entries applied (upserts + deletes from remote sources)
+	EntriesSkipped int   // Entries skipped (own source_id filtered out)
+	LastSequence   int64 // Current sequence position after pull
+}
+
 // SyncDelta fetches and applies incremental changes from Engram.
 //
 // Process:
@@ -400,23 +415,24 @@ const syncDeltaPageLimit = 500
 //  7. Apply deletes via Store.SoftDeleteLoreAt (using received_at)
 //  8. Update sync_meta.last_pull_seq to response.last_sequence
 //  9. If has_more, loop from step 3 with updated last_pull_seq
-func (s *Syncer) SyncDelta(ctx context.Context) error {
+func (s *Syncer) SyncDelta(ctx context.Context) (*DeltaResult, error) {
 	if s.engramURL == "" {
-		return ErrOffline
+		return nil, ErrOffline
 	}
 
 	ownSourceID := s.store.SourceID()
+	result := &DeltaResult{}
 
 	// Read last_pull_seq from sync_meta
 	lastPullSeqStr, err := s.store.GetSyncMeta("last_pull_seq")
 	if err != nil {
-		return fmt.Errorf("sync delta: read last_pull_seq: %w", err)
+		return nil, fmt.Errorf("sync delta: read last_pull_seq: %w", err)
 	}
 	lastPullSeq := int64(0)
 	if lastPullSeqStr != "" {
 		lastPullSeq, err = strconv.ParseInt(lastPullSeqStr, 10, 64)
 		if err != nil {
-			return fmt.Errorf("sync delta: parse last_pull_seq: %w", err)
+			return nil, fmt.Errorf("sync delta: parse last_pull_seq: %w", err)
 		}
 	}
 
@@ -427,54 +443,59 @@ func (s *Syncer) SyncDelta(ctx context.Context) error {
 
 		req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
 		if err != nil {
-			return fmt.Errorf("sync delta: create request: %w", err)
+			return nil, fmt.Errorf("sync delta: create request: %w", err)
 		}
 		s.setHeaders(req)
 
 		resp, err := s.client.Do(req)
 		if err != nil {
-			return fmt.Errorf("sync delta: %w", err)
+			return nil, fmt.Errorf("sync delta: %w", err)
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			respBody, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			return fmt.Errorf("sync delta: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+			return nil, fmt.Errorf("sync delta: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 200))
 		}
 
 		var deltaResp SyncDeltaResponse
 		if err := json.NewDecoder(resp.Body).Decode(&deltaResp); err != nil {
 			_ = resp.Body.Close()
-			return fmt.Errorf("sync delta: decode response: %w", err)
+			return nil, fmt.Errorf("sync delta: decode response: %w", err)
 		}
 		_ = resp.Body.Close()
 
 		// Apply entries, filtering out own source_id
 		for _, entry := range deltaResp.Entries {
 			if entry.SourceID == ownSourceID {
+				result.EntriesSkipped++
 				continue // skip own entries
 			}
 
 			switch entry.Operation {
 			case "upsert":
 				if err := s.applyDeltaUpsert(entry); err != nil {
-					return fmt.Errorf("sync delta: apply upsert %s: %w", entry.EntityID, err)
+					return nil, fmt.Errorf("sync delta: apply upsert %s: %w", entry.EntityID, err)
 				}
+				result.EntriesApplied++
 			case "delete":
 				if err := s.store.SoftDeleteLoreAt(entry.EntityID, entry.ReceivedAt); err != nil {
-					return fmt.Errorf("sync delta: apply delete %s: %w", entry.EntityID, err)
+					return nil, fmt.Errorf("sync delta: apply delete %s: %w", entry.EntityID, err)
 				}
+				result.EntriesApplied++
 			}
 		}
 
 		// Update last_pull_seq
 		lastPullSeq = deltaResp.LastSequence
 		if err := s.store.SetSyncMeta("last_pull_seq", strconv.FormatInt(lastPullSeq, 10)); err != nil {
-			return fmt.Errorf("sync delta: update last_pull_seq: %w", err)
+			return nil, fmt.Errorf("sync delta: update last_pull_seq: %w", err)
 		}
 
+		result.LastSequence = lastPullSeq
+
 		if !deltaResp.HasMore {
-			return nil
+			return result, nil
 		}
 	}
 }
@@ -727,7 +748,8 @@ func (s *Syncer) downloadSnapshotWithRetry(ctx context.Context) ([]byte, error) 
 // Flush pushes all pending changes immediately (used on shutdown).
 // Delegates to SyncPush.
 func (s *Syncer) Flush(ctx context.Context) error {
-	return s.SyncPush(ctx)
+	_, err := s.SyncPush(ctx)
+	return err
 }
 
 func (s *Syncer) setHeaders(req *http.Request) {

@@ -16,10 +16,6 @@ import (
 
 // EngramClient abstracts HTTP communication with the Engram central service.
 // Implementations must be safe for concurrent use.
-//
-// Note: Legacy lore/feedback methods (PushLore, PushFeedback, GetDelta) were
-// removed in Story 10.1. The new sync protocol uses change_log-based push/delta
-// via /sync/* endpoints, defined in the recall package (SyncPushRequest, etc.).
 type EngramClient interface {
 	// HealthCheck validates connectivity and returns Engram metadata.
 	// Returns embedding model name for compatibility validation.
@@ -28,6 +24,20 @@ type EngramClient interface {
 	// DownloadSnapshot streams the full lore database snapshot.
 	// Caller must close the returned ReadCloser.
 	DownloadSnapshot(ctx context.Context) (io.ReadCloser, error)
+
+	// Sync Protocol Operations (Story 10.5)
+
+	// SyncPush posts change_log entries to Engram via POST /stores/{id}/sync/push.
+	SyncPush(ctx context.Context, storeID string, req *recall.SyncPushRequest) (*recall.SyncPushResponse, error)
+
+	// SyncDelta fetches incremental changes via GET /stores/{id}/sync/delta.
+	SyncDelta(ctx context.Context, storeID string, after int64, limit int) (*recall.SyncDeltaResponse, error)
+
+	// SyncSnapshot streams the full snapshot via GET /stores/{id}/sync/snapshot.
+	// Caller must close the returned ReadCloser.
+	SyncSnapshot(ctx context.Context, storeID string) (io.ReadCloser, error)
+
+	// Store Management Operations
 
 	// ListStores returns all available stores.
 	// If prefix is non-empty, filters stores by ID prefix.
@@ -135,6 +145,89 @@ func (c *HTTPClient) HealthCheck(ctx context.Context) (*HealthResponse, error) {
 	}
 
 	return &health, nil
+}
+
+func (c *HTTPClient) SyncPush(ctx context.Context, storeID string, pushReq *recall.SyncPushRequest) (*recall.SyncPushResponse, error) {
+	body, err := json.Marshal(pushReq)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "sync_push", Err: err}
+	}
+
+	reqURL := fmt.Sprintf("%s/api/v1/stores/%s/sync/push", c.baseURL, encodeStoreID(storeID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "sync_push", Err: err}
+	}
+	c.setHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "sync_push", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, newSyncError("sync_push", resp.StatusCode, respBody)
+	}
+
+	var pushResp recall.SyncPushResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pushResp); err != nil {
+		return nil, &recall.SyncError{Operation: "sync_push", Err: err}
+	}
+	return &pushResp, nil
+}
+
+func (c *HTTPClient) SyncDelta(ctx context.Context, storeID string, after int64, limit int) (*recall.SyncDeltaResponse, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/stores/%s/sync/delta?after=%d&limit=%d",
+		c.baseURL, encodeStoreID(storeID), after, limit)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "sync_delta", Err: err}
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "sync_delta", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, newSyncError("sync_delta", resp.StatusCode, respBody)
+	}
+
+	var deltaResp recall.SyncDeltaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&deltaResp); err != nil {
+		return nil, &recall.SyncError{Operation: "sync_delta", Err: err}
+	}
+	return &deltaResp, nil
+}
+
+func (c *HTTPClient) SyncSnapshot(ctx context.Context, storeID string) (io.ReadCloser, error) {
+	reqURL := fmt.Sprintf("%s/api/v1/stores/%s/sync/snapshot", c.baseURL, encodeStoreID(storeID))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "sync_snapshot", Err: err}
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &recall.SyncError{Operation: "sync_snapshot", Err: err}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, newSyncError("sync_snapshot", resp.StatusCode, body)
+	}
+
+	return resp.Body, nil
 }
 
 func (c *HTTPClient) DownloadSnapshot(ctx context.Context) (io.ReadCloser, error) {

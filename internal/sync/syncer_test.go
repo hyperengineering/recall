@@ -6,7 +6,6 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hyperengineering/recall"
 )
@@ -15,6 +14,9 @@ import (
 type mockEngramClient struct {
 	healthCheckFn               func(ctx context.Context) (*HealthResponse, error)
 	downloadSnapshotFn          func(ctx context.Context) (io.ReadCloser, error)
+	syncPushFn                  func(ctx context.Context, storeID string, req *recall.SyncPushRequest) (*recall.SyncPushResponse, error)
+	syncDeltaFn                 func(ctx context.Context, storeID string, after int64, limit int) (*recall.SyncDeltaResponse, error)
+	syncSnapshotFn              func(ctx context.Context, storeID string) (io.ReadCloser, error)
 	listStoresFn                func(ctx context.Context, prefix string) (*ListStoresResponse, error)
 	getStoreInfoFn              func(ctx context.Context, storeID string) (*StoreInfoResponse, error)
 	createStoreFn               func(ctx context.Context, req *CreateStoreRequest) (*CreateStoreResponse, error)
@@ -33,6 +35,27 @@ func (m *mockEngramClient) HealthCheck(ctx context.Context) (*HealthResponse, er
 func (m *mockEngramClient) DownloadSnapshot(ctx context.Context) (io.ReadCloser, error) {
 	if m.downloadSnapshotFn != nil {
 		return m.downloadSnapshotFn(ctx)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) SyncPush(ctx context.Context, storeID string, req *recall.SyncPushRequest) (*recall.SyncPushResponse, error) {
+	if m.syncPushFn != nil {
+		return m.syncPushFn(ctx, storeID, req)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) SyncDelta(ctx context.Context, storeID string, after int64, limit int) (*recall.SyncDeltaResponse, error) {
+	if m.syncDeltaFn != nil {
+		return m.syncDeltaFn(ctx, storeID, after, limit)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockEngramClient) SyncSnapshot(ctx context.Context, storeID string) (io.ReadCloser, error) {
+	if m.syncSnapshotFn != nil {
+		return m.syncSnapshotFn(ctx, storeID)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -115,22 +138,6 @@ func (m *mockSyncStore) ReplaceFromSnapshot(r io.Reader) error {
 	data, _ := io.ReadAll(r)
 	m.replaceData = data
 	return m.replaceErr
-}
-
-func (m *mockSyncStore) Unsynced() ([]recall.Lore, error) {
-	return nil, nil
-}
-
-func (m *mockSyncStore) MarkSynced(ids []string, syncedAt time.Time) error {
-	return nil
-}
-
-func (m *mockSyncStore) PendingFeedback() ([]FeedbackEntry, error) {
-	return nil, nil
-}
-
-func (m *mockSyncStore) MarkFeedbackSynced(ids []int64) error {
-	return nil
 }
 
 func TestSyncer_Bootstrap_Success(t *testing.T) {

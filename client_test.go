@@ -1492,7 +1492,7 @@ func TestClient_SyncDelta_OfflineMode(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	// SyncDelta should return ErrOffline
-	err = client.SyncDelta(context.Background())
+	_, err = client.SyncDelta(context.Background())
 	if !errors.Is(err, recall.ErrOffline) {
 		t.Errorf("SyncDelta() error = %v, want ErrOffline", err)
 	}
