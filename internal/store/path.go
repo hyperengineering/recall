@@ -7,8 +7,12 @@ import (
 )
 
 // DefaultStoreRoot returns the root directory for all stores.
-// Defaults to ~/.recall/stores, falls back to ./.recall/stores if home dir unavailable.
+// If RECALL_HOME is set, uses $RECALL_HOME/stores.
+// Otherwise defaults to ~/.recall/stores, falls back to ./.recall/stores if home dir unavailable.
 func DefaultStoreRoot() string {
+	if recallHome := os.Getenv("RECALL_HOME"); recallHome != "" {
+		return filepath.Join(recallHome, "stores")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		// Fallback to current working directory

@@ -91,6 +91,45 @@ func TestDefaultStoreRoot(t *testing.T) {
 	}
 }
 
+func TestDefaultStoreRoot_RECALL_HOME_Override(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("RECALL_HOME", tmp)
+
+	root := store.DefaultStoreRoot()
+	expected := filepath.Join(tmp, "stores")
+
+	if root != expected {
+		t.Errorf("DefaultStoreRoot() = %q, want %q", root, expected)
+	}
+}
+
+func TestDefaultStoreRoot_RECALL_HOME_Empty_FallsBack(t *testing.T) {
+	t.Setenv("RECALL_HOME", "")
+
+	root := store.DefaultStoreRoot()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("cannot determine home directory: %v", err)
+	}
+	expected := filepath.Join(home, ".recall", "stores")
+
+	if root != expected {
+		t.Errorf("DefaultStoreRoot() = %q, want %q", root, expected)
+	}
+}
+
+func TestStoreDBPath_RECALL_HOME_Override(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("RECALL_HOME", tmp)
+
+	got := store.StoreDBPath("org/team")
+	expected := filepath.Join(tmp, "stores", "org__team", "lore.db")
+
+	if got != expected {
+		t.Errorf("StoreDBPath() = %q, want %q", got, expected)
+	}
+}
+
 func TestDefaultStoreRoot_UsesHomeDir(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
