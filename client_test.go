@@ -3,6 +3,8 @@ package recall_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,6 +93,49 @@ func TestNew_EngramURLWithoutAPIKey(t *testing.T) {
 	}
 	if ve.Field != "APIKey" {
 		t.Errorf("ValidationError.Field = %q, want %q", ve.Field, "APIKey")
+	}
+}
+
+func TestNew_SyncerStoreIDWired(t *testing.T) {
+	// Verify that cfg.Store is wired to syncer.storeID so sync operations
+	// use store-prefixed API paths and don't panic. (Regression: v1.3.0)
+	var requestPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath = r.URL.Path
+		if strings.HasSuffix(r.URL.Path, "/sync/push") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"accepted":0,"remote_sequence":0}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","embedding_model":"test","lore_count":0}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	client, err := recall.New(recall.Config{
+		LocalPath: dbPath,
+		EngramURL: srv.URL,
+		APIKey:    "test-key",
+		Store:     "my-project",
+		AutoSync:  false,
+	})
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// SyncPush with empty change_log is a no-op (no HTTP call), so record
+	// something first to trigger an actual push request.
+	_, _ = client.Record("test content", recall.CategoryPatternOutcome)
+
+	// This must not panic — it proves storeID is set on the syncer.
+	_, _ = client.SyncPush(context.Background())
+
+	if !strings.Contains(requestPath, "/stores/my-project/sync/push") {
+		t.Errorf("push path = %q, want it to contain /stores/my-project/sync/push", requestPath)
 	}
 }
 

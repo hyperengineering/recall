@@ -54,6 +54,7 @@ func New(cfg Config) (*Client, error) {
 
 	if !cfg.IsOffline() {
 		c.syncer = NewSyncer(store, cfg.EngramURL, cfg.APIKey, cfg.SourceID)
+		c.syncer.SetStoreID(cfg.Store)
 		c.syncer.SetDebugLogger(debug)
 	}
 
